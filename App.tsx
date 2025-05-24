@@ -1,7 +1,3 @@
-
-
-
-
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { cognitiveParseScreenImage, updateTasksWithChronographer, generateContextualSuggestions } from './services/geminiService';
@@ -13,7 +9,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { PlanProjectModal } from './components/PlanProjectModal';
 import { ContextualSuggestionsDisplay } from './components/ContextualSuggestionsDisplay';
 import { NudgeModal } from './components/NudgeModal';
-import type { TaskItem, CognitiveParserOutput, AppSettings, TaskStatus, ExternalLLMConfig, CaptureMode, UserEdit, DynamicContextMemory, PotentialMainTask, UserNudgeInput, ExportDataV1 } from './types';
+import type { TaskItem, CognitiveParserOutput, AppSettings, TaskStatus, ExternalLLMConfig, CaptureMode, UserEdit, DynamicContextMemory, PotentialMainTask, UserNudgeInput, ExportDataV1, DynamicContextItem } from './types';
 import { logger } from './services/logger';
 import { fetchHarmoniaDigitalisDocument } from './services/documentFetcher'; // Will fetch Apex Doctrine
 import * as dynamicContextManager from './services/dynamicContextManager';
@@ -78,6 +74,7 @@ const App: React.FC = () => {
   const [potentialMainTasks, setPotentialMainTasks] = useState<PotentialMainTask[]>([]);
   const [showNudgeModal, setShowNudgeModal] = useState<boolean>(false);
   const [taskSearchTerm, setTaskSearchTerm] = useState<string>('');
+  const [currentDirective, setCurrentDirective] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -98,22 +95,22 @@ const App: React.FC = () => {
         logger.info(APP_COMPONENT_NAME, "useEffect[]", "AI Agent Apex Doctrine loaded successfully.");
       } else {
         logger.warn(APP_COMPONENT_NAME, "useEffect[]", "AI Agent Apex Doctrine could not be loaded. AI operations will proceed without foundational principle guidance for this session.");
-        setStatusMessage(prev => prev + " (Warning: Core principles document failed to load)");
+        setStatusMessage((prev: string) => prev + " (Warning: Core principles document failed to load)");
       }
     });
 
     try {
       const storedTasks = localStorage.getItem(TASKS_STORAGE_KEY);
-      if (storedTasks) setTasks(JSON.parse(storedTasks));
+      if (storedTasks) setTasks(JSON.parse(storedTasks) as TaskItem[]);
       
       const storedContexts = localStorage.getItem(CONTEXTS_STORAGE_KEY);
-      if (storedContexts) setAllContexts(new Map(JSON.parse(storedContexts)));
+      if (storedContexts) setAllContexts(new Map(JSON.parse(storedContexts) as [string, CognitiveParserOutput][]));
       
       const storedDynamicContext = localStorage.getItem(DYNAMIC_CONTEXT_MEMORY_STORAGE_KEY);
-      if (storedDynamicContext) setDynamicContextMemory(new Map(JSON.parse(storedDynamicContext)));
+      if (storedDynamicContext) setDynamicContextMemory(new Map(JSON.parse(storedDynamicContext) as [string, DynamicContextItem][]));
       
       const storedPMTs = localStorage.getItem(POTENTIAL_MAIN_TASKS_STORAGE_KEY);
-      if (storedPMTs) setPotentialMainTasks(JSON.parse(storedPMTs));
+      if (storedPMTs) setPotentialMainTasks(JSON.parse(storedPMTs) as PotentialMainTask[]);
 
     } catch (e) {
       logger.error(APP_COMPONENT_NAME, "useEffect[]", "Failed to load data from localStorage", e);
@@ -144,7 +141,7 @@ const App: React.FC = () => {
         videoToClean.onloadedmetadata = null;
         videoToClean.onerror = null;
         if (videoToClean.srcObject) {
-            (videoToClean.srcObject as MediaStream).getTracks().forEach(track => track.stop());
+            (videoToClean.srcObject as MediaStream).getTracks().forEach((track: MediaStreamTrack) => track.stop());
             videoToClean.srcObject = null;
         }
       }
@@ -155,23 +152,23 @@ const App: React.FC = () => {
   // Context Cleanup Effect
   useEffect(() => {
     const cleanupInterval = setInterval(() => {
-      setAllContexts(prevContexts => {
+      setAllContexts((prevContexts: Map<string, CognitiveParserOutput>) => {
         const newContexts = new Map(prevContexts);
         let changed = false;
         const referencedContextIds = new Set<string>();
 
-        tasks.forEach(task => {
+        tasks.forEach((task: TaskItem) => {
           referencedContextIds.add(task.firstSeenContextId);
           referencedContextIds.add(task.latestContextId);
         });
         if (suggestionContextId) {
           referencedContextIds.add(suggestionContextId);
         }
-        potentialMainTasks.forEach(pmt => {
-          pmt.contributingContextIds?.forEach(id => referencedContextIds.add(id));
+        potentialMainTasks.forEach((pmt: PotentialMainTask) => {
+          pmt.contributingContextIds?.forEach((id: string) => referencedContextIds.add(id));
         });
-        dynamicContextMemory.forEach(dci => {
-            dci.sourceContextIds?.forEach(id => referencedContextIds.add(id));
+        dynamicContextMemory.forEach((dci: DynamicContextItem) => {
+            dci.sourceContextIds?.forEach((id: string) => referencedContextIds.add(id));
         });
 
 
@@ -206,7 +203,7 @@ const App: React.FC = () => {
     setIsMonitoring(false);
     if (captureIntervalIdRef.current) clearInterval(captureIntervalIdRef.current);
     captureIntervalIdRef.current = null;
-    if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach(track => track.stop());
+    if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach((track: MediaStreamTrack) => track.stop());
     mediaStreamRef.current = null;
     if (videoRef.current && videoRef.current.srcObject) {
       videoRef.current.pause();
@@ -260,9 +257,9 @@ const App: React.FC = () => {
       if (!base64ImageData) throw new Error("Failed to extract base64 data from image.");
       
       setStatusMessage(`Cognitive Parser analyzing ${captureMode} capture...`);
-      const parsedContext = await cognitiveParseScreenImage(base64ImageData, apexDoctrineContent, captureMode);
+      const parsedContext = await cognitiveParseScreenImage(base64ImageData, apexDoctrineContent, captureMode, currentDirective);
       
-      setAllContexts(prevMap => new Map(prevMap).set(parsedContext.id, parsedContext));
+      setAllContexts((prevMap: Map<string, CognitiveParserOutput>) => new Map(prevMap).set(parsedContext.id, parsedContext));
       setIsCapturingFrame(false);
 
       const { updatedMemory, extractedKeywords } = dynamicContextManager.updateDynamicContextMemory(parsedContext, dynamicContextMemory);
@@ -275,8 +272,8 @@ const App: React.FC = () => {
         setIsGeneratingSuggestions(true);
         setStatusMessage("Generating contextual suggestions...");
         try {
-          const suggestions = await generateContextualSuggestions(apexDoctrineContent, updatedMemory, topPMT, parsedContext.activeInteractionContext, parsedContext.inferredActivity);
-          // Fix: Access the 'result' property from the suggestions object
+          const suggestions = await generateContextualSuggestions(apexDoctrineContent, updatedMemory, topPMT, parsedContext.activeInteractionContext, parsedContext.inferredActivity, currentDirective);
+          
           setContextualSuggestions(suggestions.result); setSuggestionContextId(parsedContext.id);
         } catch (suggestionErr: any) {
           logger.warn(APP_COMPONENT_NAME, "processCapture", "Failed to generate suggestions", suggestionErr);
@@ -286,8 +283,8 @@ const App: React.FC = () => {
       } else { setContextualSuggestions([]); setSuggestionContextId(null); }
 
       setStatusMessage("Task Chronographer updating tasks...");
-      const updatedTasksFromLLM = await updateTasksWithChronographer(tasks, parsedContext, apexDoctrineContent, updatedMemory, topPMT, extractedKeywords);
-      // Fix: Access the 'result' property from updatedTasksFromLLM
+      const updatedTasksFromLLM = await updateTasksWithChronographer(tasks, parsedContext, apexDoctrineContent, updatedMemory, topPMT, extractedKeywords, null, currentDirective);
+      
       const trimmedTasks = applyTaskTrimming(updatedTasksFromLLM.result);
       setTasks(trimmedTasks);
       
@@ -301,7 +298,7 @@ const App: React.FC = () => {
       setStatusMessage(`Error: ${errorMessage.substring(0, 100)}...`);
       setIsCapturingFrame(false); 
     } finally { setIsProcessing(false); }
-  }, [tasks, allContexts, stopMonitoring, applyTaskTrimming, captureMode, apexDoctrineContent, dynamicContextMemory, potentialMainTasks]);
+  }, [tasks, allContexts, stopMonitoring, applyTaskTrimming, captureMode, apexDoctrineContent, dynamicContextMemory, potentialMainTasks, currentDirective]);
 
   const startMonitoring = useCallback(async () => {
     if (!navigator.mediaDevices) {
@@ -347,12 +344,15 @@ const App: React.FC = () => {
     }
   }, [processCapture, settings.captureIntervalSeconds, stopMonitoring, captureMode]);
 
-  const handleManualCapture = useCallback(() => { processCapture(true); }, [processCapture]);
+  const handleManualCapture = useCallback(() => {
+    logger.debug(APP_COMPONENT_NAME, "handleManualCapture", "Manual capture initiated by user.");
+    processCapture(true);
+  }, [processCapture]);
   
   // Fix: Adjust parameter type to match SettingsModalProps definition
   const handleSaveAppSettings = (newSettings: Pick<AppSettings, 'captureIntervalSeconds' | 'maxTaskListSize'>) => {
     const oldInterval = settings.captureIntervalSeconds;
-    setSettings(prevSettings => ({...prevSettings, ...newSettings})); 
+    setSettings((prevSettings: AppSettings) => ({...prevSettings, ...newSettings})); 
     if (isMonitoring && newSettings.captureIntervalSeconds !== oldInterval) {
       logger.info(APP_COMPONENT_NAME, "handleSaveAppSettings", `Capture interval changed from ${oldInterval}s to ${newSettings.captureIntervalSeconds}s. Restarting monitoring.`);
       stopMonitoring(false, "Interval changed, restarting...");
@@ -363,8 +363,8 @@ const App: React.FC = () => {
   const handleSaveLLMConfigs = (newConfigs: ExternalLLMConfig[]) => { setExternalLLMConfigs(newConfigs); };
   
   const handleUpdateTask = useCallback((taskId: string, updates: Partial<TaskItem>, editLogEntry?: UserEdit) => {
-    setTasks(prevTasks => {
-      const newTasks = prevTasks.map(task => {
+    setTasks((prevTasks: TaskItem[]) => {
+      const newTasks = prevTasks.map((task: TaskItem) => {
         if (task.id === taskId) {
           const updatedTask = { ...task, ...updates, lastUpdatedTimestamp: Date.now() };
           if (editLogEntry) {
@@ -379,8 +379,8 @@ const App: React.FC = () => {
   }, [applyTaskTrimming]);
 
   const handleRateTaskAccuracy = useCallback((taskId: string, rating: 'relevant' | 'irrelevant') => {
-    setTasks(prevTasks => 
-      prevTasks.map(task => 
+    setTasks((prevTasks: TaskItem[]) => 
+      prevTasks.map((task: TaskItem) => 
         task.id === taskId 
           ? { ...task, aiAccuracyFeedback: { timestamp: Date.now(), rating, contextIdWhenRated: task.latestContextId } }
           : task
@@ -389,7 +389,7 @@ const App: React.FC = () => {
   }, []);
 
   const handleRateSuggestions = useCallback((contextId: string, rating: 'useful' | 'not_useful') => {
-    setAllContexts(prevContexts => {
+    setAllContexts((prevContexts: Map<string, CognitiveParserOutput>) => {
       const newContexts = new Map(prevContexts);
       const contextToUpdate = newContexts.get(contextId);
       if (contextToUpdate) {
@@ -403,7 +403,7 @@ const App: React.FC = () => {
   }, []);
 
   const handleGenerateTasksFromGoal = async (goal: string, llmConfigId: string) => {
-    const config = externalLLMConfigs.find(c => c.id === llmConfigId);
+    const config = externalLLMConfigs.find((c: ExternalLLMConfig) => c.id === llmConfigId);
     if (!config) { 
       setPlanningProjectError("Selected LLM Connector not found.");
       logger.error(APP_COMPONENT_NAME, "handleGenerateTasksFromGoal", "LLM config not found", { llmConfigId });
@@ -413,10 +413,10 @@ const App: React.FC = () => {
     try {
       let fullPrompt = "";
       const topPMT = dynamicContextManager.getHighestWeightedPMTs(potentialMainTasks, 1)[0];
-      const contextSummary = Array.from(dynamicContextMemory.entries())
-                                .sort(([,a],[,b]) => b.weight - a.weight)
+      const contextSummary = (Array.from(dynamicContextMemory.entries()) as Array<[string, DynamicContextItem]>)
+                                .sort((a: [string, DynamicContextItem], b: [string, DynamicContextItem]) => b[1].weight - a[1].weight)
                                 .slice(0, 5)
-                                .map(([kw]) => kw)
+                                .map((entry: [string, DynamicContextItem]) => entry[0])
                                 .join(', ');
 
       let contextualPrefix = `Current high-level context for the user:\n`;
@@ -495,7 +495,7 @@ const App: React.FC = () => {
          userEditsHistory: [{timestamp: now, editedField: 'description', newValue: pt.name || pt.description, editSource: 'user_manual'}], // Treat as initial 'manual' setup
          keywords: dynamicContextManager.extractKeywordsFromContext({ inferredActivity: pt.description } as CognitiveParserOutput), // Add some keywords
        }));
-       setTasks(prevTasks => applyTaskTrimming([...newGoalTasks, ...prevTasks]));
+       setTasks((prevTasks: TaskItem[]) => applyTaskTrimming([...newGoalTasks, ...prevTasks]));
        setStatusMessage(`Generated ${newGoalTasks.length} tasks for "${goal.substring(0,30)}...".`); 
        setShowPlanProjectModal(false);
     } catch (err: any) { 
@@ -513,7 +513,7 @@ const App: React.FC = () => {
     setPotentialMainTasks(updatedPMTs);
     setShowNudgeModal(false);
     const nudgeDesc = nudge.type === 'new_goal' ? nudge.goalText?.substring(0,30) : 
-                      potentialMainTasks.find(p=>p.id===nudge.pmtId)?.description.substring(0,30);
+                      potentialMainTasks.find((p: PotentialMainTask) =>p.id===nudge.pmtId)?.description.substring(0,30);
     setStatusMessage(`AI focus updated by user: ${nudgeDesc || 'Confirmed goal'}.`);
   };
 
@@ -572,13 +572,13 @@ const App: React.FC = () => {
           setAllContexts(new Map(importedData.allContexts as Array<[string, CognitiveParserOutput]>));
         }
         if (importedData.settings && typeof importedData.settings === 'object') {
-          setSettings(prev => ({...prev, ...importedData.settings as AppSettings}));
+          setSettings((prev: AppSettings) => ({...prev, ...importedData.settings as AppSettings}));
         }
         if (importedData.externalLLMConfigs && Array.isArray(importedData.externalLLMConfigs)) {
           setExternalLLMConfigs(importedData.externalLLMConfigs as ExternalLLMConfig[]);
         }
         if (importedData.dynamicContextMemory && Array.isArray(importedData.dynamicContextMemory)) {
-          setDynamicContextMemory(new Map(importedData.dynamicContextMemory as Array<[string, DynamicContextMemory extends Map<any, infer V> ? V: never]>));
+          setDynamicContextMemory(new Map(importedData.dynamicContextMemory as Array<[string, DynamicContextItem]>));
         }
         if (importedData.potentialMainTasks && Array.isArray(importedData.potentialMainTasks)) {
           setPotentialMainTasks(importedData.potentialMainTasks as PotentialMainTask[]);
@@ -604,22 +604,27 @@ const App: React.FC = () => {
     reader.readAsText(file);
   }, [applyTaskTrimming]);
 
+  const handleSetCurrentDirective = useCallback((directive: string | null) => {
+    setCurrentDirective(directive);
+    setStatusMessage(directive ? `Current directive set: "${directive.substring(0,50)}..."` : "Current directive cleared.");
+    logger.info(APP_COMPONENT_NAME, "handleSetCurrentDirective", directive ? `Directive set: ${directive}` : "Directive cleared");
+  }, []);
 
-  const filteredTasks = tasks.filter(task => {
+  const filteredTasks = tasks.filter((task: TaskItem) => {
     if (!taskSearchTerm.trim()) return true;
     const searchTermLower = taskSearchTerm.toLowerCase();
     return (
       task.description.toLowerCase().includes(searchTermLower) ||
       (task.notes && task.notes.toLowerCase().includes(searchTermLower)) ||
-      (task.tags && task.tags.some(tag => tag.toLowerCase().includes(searchTermLower))) ||
-      (task.keywords && task.keywords.some(kw => kw.toLowerCase().includes(searchTermLower)))
+      (task.tags && task.tags.some((tag: string) => tag.toLowerCase().includes(searchTermLower))) ||
+      (task.keywords && task.keywords.some((kw: string) => kw.toLowerCase().includes(searchTermLower)))
     );
   });
 
   const taskColumns: { title: string; status: TaskStatus; items: TaskItem[] }[] = [
-    { title: "To-Do", status: "To-Do", items: filteredTasks.filter(t => t.status === 'To-Do') },
-    { title: "Doing", status: "Doing", items: filteredTasks.filter(t => t.status === 'Doing') },
-    { title: "Done", status: "Done", items: filteredTasks.filter(t => t.status === 'Done') },
+    { title: "To-Do", status: "To-Do", items: filteredTasks.filter((t: TaskItem) => t.status === 'To-Do') },
+    { title: "Doing", status: "Doing", items: filteredTasks.filter((t: TaskItem) => t.status === 'Doing') },
+    { title: "Done", status: "Done", items: filteredTasks.filter((t: TaskItem) => t.status === 'Done') },
   ];
   
   const anyOperationPending = isProcessing || isCapturingFrame || isGeneratingSuggestions || isPlanningProject;
@@ -662,9 +667,11 @@ const App: React.FC = () => {
             statusMessage={currentStatusMessage}
             captureInterval={settings.captureIntervalSeconds}
             currentCaptureMode={captureMode}
-            onSetCaptureMode={(mode) => { if (!isMonitoring && !anyOperationPending) setCaptureMode(mode);}}
+            onSetCaptureMode={(mode: CaptureMode) => { if (!isMonitoring && !anyOperationPending) setCaptureMode(mode);}}
             disabledAllControls={anyOperationPending && !isMonitoring}
             onOpenNudgeModal={handleOpenNudgeModal}
+            onSetCurrentDirective={handleSetCurrentDirective}
+            currentDirective={currentDirective}
             topPMTDescription={topPMTForDisplay?.description}
           />
 
@@ -684,7 +691,7 @@ const App: React.FC = () => {
               type="text"
               placeholder="Search tasks (description, notes, tags, keywords)..."
               value={taskSearchTerm}
-              onChange={(e) => setTaskSearchTerm(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTaskSearchTerm(e.target.value)}
               className="w-full p-2 text-sm bg-slate-700 border border-slate-600 rounded-md text-slate-100 focus:ring-sky-500 focus:border-sky-500 placeholder-slate-400"
             />
           </div>
@@ -710,7 +717,7 @@ const App: React.FC = () => {
                 <p className="font-semibold">All PMTs ({potentialMainTasks.length}):</p>
                 {dynamicContextManager.getHighestWeightedPMTs(potentialMainTasks, 5).map(pmt => <p key={pmt.id}>- {pmt.description.substring(0,50)}... (W: {pmt.weight.toFixed(2)}, S: {pmt.source})</p>)}
                 <p className="font-semibold mt-1">Dynamic Context Memory ({dynamicContextMemory.size} items):</p>
-                {Array.from(dynamicContextMemory.entries()).sort(([,a],[,b]) => b.weight - a.weight).slice(0,10).map(([key, item]) => (
+                {(Array.from(dynamicContextMemory.entries()) as Array<[string, DynamicContextItem]>).sort((a: [string, DynamicContextItem], b: [string, DynamicContextItem]) => b[1].weight - a[1].weight).slice(0,10).map(([key, item]: [string, DynamicContextItem]) => (
                   <p key={key}>- {key} (W: {item.weight.toFixed(2)}, F: {item.frequency}, T: {new Date(item.lastSeenTimestamp).toLocaleTimeString()})</p>
                 ))}
               </div>
@@ -735,7 +742,7 @@ const App: React.FC = () => {
           onSaveAppSettings={handleSaveAppSettings}
           onSaveLLMConfigs={handleSaveLLMConfigs}
           onClose={() => setShowSettingsModal(false)}
-          onToggleShowDebugInfo={() => setSettings(s => ({...s, showDebugInfo: !s.showDebugInfo}))}
+          onToggleShowDebugInfo={() => setSettings((s: AppSettings) => ({...s, showDebugInfo: !s.showDebugInfo}))}
           // Fix: Pass onExportData and onImportData to SettingsModal
           onExportData={handleExportData}
           onImportData={handleImportData}

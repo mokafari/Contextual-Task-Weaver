@@ -1,4 +1,3 @@
-
 # Contextual Task Weaver (ETMS Core) - Project Roadmap
 
 This document outlines the potential future development path for the Contextual Task Weaver (ETMS Core) project, aiming to progressively integrate the principles of the Emergent Task Management System (ETMS) framework.
@@ -63,6 +62,31 @@ This document outlines the potential future development path for the Contextual 
     *   **[DONE - Initial Implementation] "Meta-Task" Introduction (Simple - System Generated):** System now periodically checks for 'Doing' tasks active for an extended period (e.g., >3 days) and generates a 'System: Review Overdue...' meta-task if no similar active one exists. This task appears on the Kanban board.
     *   **[DONE - Initial Implementation] Export/Import Tasks & Contexts:** Users can now export all key application data (tasks, contexts, dynamic memory, PMTs, aggregated feedback, settings, LLM configs) to a versioned JSON file and import data from such a file, overwriting current data after confirmation.
 
+## Phase 2.5: Deepening Contextual Understanding & User Guidance (Medium Term - Next Steps)
+
+*   **Goal:** Significantly improve the AI's ability to understand user intent by analyzing active text inputs and inferring meta-goals from sequences of actions. Introduce more direct user control over the AI's focus.
+*   **LLM Agent Evolution & Learning Cycle (Refining Intent):**
+    *   The `CognitiveParser` will be enhanced to specifically identify and prioritize text being actively typed or focused on by the user (e.g., in chat boxes, document editors, search fields). This active text becomes a primary signal for intent.
+    *   The `TaskChronographer` and `PotentialMainTask` manager will begin to correlate sequences of `CognitiveParserOutput` and changes in `DynamicContextMemory` over short windows to infer higher-level "meta-intents" or project-related activities.
+    *   The "Promptable Current Directive" (see below) will heavily influence all AI reasoning.
+*   **Features:**
+    *   **[TO DO] Enhanced Text Input Analysis for Intent:**
+        *   Modify `CognitiveParser` to better identify and extract text from active input fields (chat boxes, document editors, IDEs, search bars).
+        *   Add a field to `CognitiveParserOutput` like `activeUserTextEntry: string | null` to store this.
+        *   Update AI prompts to weigh this `activeUserTextEntry` heavily when inferring activity and goals.
+    *   **[TO DO] Initial Meta-Intent Stitching (Sequential Context Analysis):**
+        *   Develop logic (likely within `dynamicContextManager` or by enhancing `TaskChronographer`'s context) to look for patterns or thematic links in the last N (e.g., 3-5) `CognitiveParserOutput` contexts or significant shifts in `DynamicContextMemory`.
+        *   This will help in forming more robust `PotentialMainTask` hypotheses that span multiple micro-actions.
+    *   **[TO DO] Promptable Current Directive:**
+        *   Implement a UI element (e.g., a dedicated text input field) allowing the user to set an explicit "Current Directive" (e.g., "Focus on writing the project proposal").
+        *   This directive will be passed to all core AI services (`CognitiveParser`, `TaskChronographer`, `SuggestionGenerator`).
+        *   AI prompts will be updated to instruct the LLMs to heavily prioritize this user-set directive in their analysis, task generation/updating, and suggestion formulation. This directive can temporarily override or strongly bias PMTs.
+    *   **[TO DO] UI/UX Refinements for Task Flow & Stability (Iterative):**
+        *   Begin exploring UI adjustments based on user feedback regarding Kanban clarity and task volatility.
+        *   Review and tune `TaskChronographer` prompts to be more conservative with task renaming/merging unless confidence is high or changes align strongly with the Current Directive or confirmed PMTs.
+        *   Consider mechanisms for user review of major AI-suggested task changes.
+        *   Research alternative UI paradigms (e.g., activity-centric feed, focus view driven by directive) as part of ongoing UX improvement.
+
 ## Phase 3: Emergent Intelligence & Proactive Assistance (Long Term)
 
 *   **Goal:** Enable the system to demonstrate more emergent intelligence by learning from patterns, adapting its behavior, and proactively assisting the user, guided by AAD principles.
@@ -97,10 +121,11 @@ This document outlines the potential future development path for the Contextual 
     *   **[TO DO] Automated Task Decomposition & Planning (Advanced):**
         *   The LLM agent, using its learned heuristics and the KS, attempts to automatically break down high-level user goals (input via text or complex `CognitiveParserOutput`) into a sequence of `TaskItem`s with suggested statuses and dependencies. The 'Plan with AI' feature evolves into a core internal capability. The ETMS agent, deeply leveraging its internal KS and learned heuristics (informed by AAD), will perform most of the planning. External LLMs might be orchestrated as specialized 'consultants' for novel domains or specific sub-problems.
     *   **[TO DO] Autonomous Task Execution (Initial Framework):**
-        *   **Goal:** Enable the LLM agent to perform predefined, simple automated actions based on task context, user delegation, or explicit triggers from the KS.
-        *   **Mechanism:** Develop an 'Action Execution Module'.
-        *   **KS Role:** Store 'Actionable Patterns' or 'Automated Workflow Triggers'.
-        *   **User Control & AAD:** Strong emphasis on user consent, logging, and adherence to AAD.
+        *   **Goal:** Enable the LLM agent to perform predefined, simple automated actions based on task context, user delegation, or explicit triggers from the KS. This includes the capability for **AI Agent Supervision via UI Emulation**: an advanced form of autonomous action where the Weaver monitors and controls other AI tools (e.g., coding agents, web-based LLMs) using keyboard and mouse emulation.
+        *   **Mechanism:** Develop an 'Action Execution Module' with robust UI automation capabilities (e.g., screen reading for state detection, keyboard/mouse control).
+            *   For AI Supervision: This module will need to interpret the state of external AI tools (e.g., detect errors, operational limits like "X tries") and execute control actions (e.g., restart, re-prompt).
+        *   **KS Role:** Store 'Actionable Patterns', 'Automated Workflow Triggers', and 'Supervision Protocols' for specific external AI tools. The KS would also store the necessary context/prompts for re-initializing supervised agents.
+        *   **User Control & AAD:** Strong emphasis on user consent, clear logging of emulated actions, user override capabilities, and strict adherence to AAD (e.g., preventing unauthorized actions, ensuring transparency).
     *   **[TO DO] Advanced Internal Prompting (CoT/ToT Emulation):**
         *   For complex analysis, the system internally queries the KS, analyzes patterns using CoT/ToT-like reasoning, and generates hypotheses or solutions.
     *   **[TO DO] Self-Improving System (Meta-Learning Loops):**
@@ -108,6 +133,9 @@ This document outlines the potential future development path for the Contextual 
     *   **[TO DO] Dependency Management:** Introduce explicit `dependsOn` relationships between `TaskItem`s.
     *   **[TO DO] Predictive Task Generation:** Based on project goals or recurring workflows learned from the KS, suggest future tasks.
     *   **[TO DO - R&D] External Systems & Agent Interaction (Advanced R&D):**
+        *   **Goal:** Research controlled, secure interaction with external systems, tools, and specialized AI agents. This includes both API-level integration and **UI Emulation-based interaction** for tools that don't offer APIs (complementing the Autonomous Task Execution feature).
+        *   **Mechanism:**
+            *   API-based: Secure API layers, auth protocols, sandboxing.
         *   **Goal:** Research controlled, secure interaction with external systems, tools, and specialized AI agents (e.g., coding agents).
         *   **Mechanism:** Secure API layers, auth protocols, sandboxing.
         *   **Safety & Control:** Robust safety protocols, user permissions, logging, user oversight.

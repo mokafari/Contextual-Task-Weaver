@@ -1,4 +1,3 @@
-
 export type CaptureMode = 'screen' | 'camera';
 
 export type TaskStatus = 'To-Do' | 'Doing' | 'Done';
@@ -43,6 +42,7 @@ export interface CognitiveParserOutput {
   windowTitle?: string;
   keyTexts: KeyText[]; 
   uiElements: UIElement[]; 
+  activeUserTextEntry?: string | null; // Text being actively entered by the user
   sentiment?: 'positive' | 'negative' | 'neutral';
   urgency?: 'high' | 'medium' | 'low';
   category?: string; 
@@ -107,6 +107,14 @@ export interface DynamicContextItem {
   sourceContextIds: Set<string>; // Which capture contexts contributed this keyword
 }
 export type DynamicContextMemory = Map<string, DynamicContextItem>;
+
+// Added in dynamicContextManager.ts, needs to be in types.ts and exported
+export interface MetaIntentAnalysis {
+    metaIntentDescription: string | null;
+    confidence: number;
+    contributingKeywords: string[];
+    sourceContextIds: string[];
+}
 
 export interface PotentialMainTask {
   id: string;

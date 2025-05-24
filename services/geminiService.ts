@@ -1,6 +1,6 @@
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { v4 as uuidv4 } from 'uuid';
-import type { TaskItem, CognitiveParserOutput, ActiveInteractionContext, UserEdit, CaptureMode, DynamicContextMemory, PotentialMainTask } from '../types';
+import type { TaskItem, CognitiveParserOutput, ActiveInteractionContext, UserEdit, CaptureMode, DynamicContextMemory, PotentialMainTask, MetaIntentAnalysis } from '../types';
 import { logger } from './logger';
 
 const API_KEY = import.meta.env.VITE_API_KEY;
@@ -13,7 +13,7 @@ if (!API_KEY) {
 const ai = new GoogleGenAI({ apiKey: API_KEY! });
 const TEXT_MODEL_NAME = 'gemini-2.5-flash-preview-04-17';
 
-const COGNITIVE_PARSER_PROMPT_TEMPLATE = (captureMode: CaptureMode) => `
+const COGNITIVE_PARSER_PROMPT_TEMPLATE = (captureMode: CaptureMode, currentDirective: string | null) => `
 CRITICAL INSTRUCTION: Your entire response MUST BE a single, valid JSON object. Adhere EXACTLY to the schema defined below.
 Do NOT include any explanations, comments, or any text outside of this JSON object.
 All property names (keys) in the JSON MUST be enclosed in double quotes.
@@ -21,12 +21,15 @@ String values within the JSON must be properly escaped if they contain special c
 Ensure that NO non-JSON characters, words, or commentary are inserted *between* valid JSON elements, keys, values, or *within* arrays and objects. The JSON structure must be pure and uninterrupted internally.
 
 Analyze this ${captureMode} capture thoroughly. Your goal is to understand the user's current activity and the context.
+Pay special attention to any text the user might be actively typing or editing, such as in a focused input field, a chat message being composed, a search query, or content within a document editor. This active text is a strong indicator of current intent.
+${currentDirective ? `\\nIMPORTANT: The user has set a CURRENT DIRECTIVE: "${currentDirective}". This directive should be your PRIMARY LENS for interpreting the scene. Ensure your inferred activity, user activity goal, and all other interpretations strongly align with or directly reflect this directive.` : ''}
+
 Respond in JSON format with the following structure:
 {
   "id": "string (generate a new UUID for this parse event)",
   "timestamp": "number (current epoch milliseconds)",
   "captureModeUsed": "${captureMode}",
-  "inferredActivity": "string (e.g., 'Editing a document named 'Project Proposal.docx'', 'Debugging Python code in script.py', 'Browsing LinkedIn feed', 'Watching a YouTube video titled 'Learn React'') - this should be a descriptive sentence of user's action",
+  "inferredActivity": "string (e.g., 'Editing a document named 'Project Proposal.docx'', 'Debugging Python code in script.py', 'Browsing LinkedIn feed', 'Watching a YouTube video titled 'Learn React'') - this should be a descriptive sentence of user's action. Prioritize information from 'activeUserTextEntry' if available AND the CURRENT DIRECTIVE (if provided) when forming this activity.",
   "activeApplication": "string (e.g., 'Microsoft Word', 'VSCode', 'Google Chrome', 'YouTube App') or null if not determinable",
   "windowTitle": "string (full window title if available/applicable) or null",
   "keyTexts": [ 
@@ -45,8 +48,9 @@ Respond in JSON format with the following structure:
       "importance": "number (0-1, estimate)" 
     } 
   ],
+  "activeUserTextEntry": "string or null (Extract any text the user is actively typing or editing, e.g., in a focused input field, chat box, document editor, or search bar. This is a high-priority field for understanding intent.)",
   "activeInteractionContext": { 
-    "userActivityGoal": "string (infer a specific short-term goal, e.g., 'Replying to an email from Jane Doe', 'Searching for 'best pizza near me'', 'Writing a function to calculate fibonacci') or null",
+    "userActivityGoal": "string (infer a specific short-term goal, e.g., 'Replying to an email from Jane Doe', 'Searching for 'best pizza near me'', 'Writing a function to calculate fibonacci') or null. Strongly consider 'activeUserTextEntry' AND the CURRENT DIRECTIVE (if provided) for this inference.",
     "focusedElement": { 
       "type": "string (type of the focused UI element)", 
       "label": "string (label of the focused UI element)" 
@@ -59,6 +63,8 @@ The "keyTexts.text" and "uiElements.label" fields should contain only the actual
 If specific details like windowTitle or activeApplication are not clearly determinable from the ${captureMode} image, set their respective JSON values to null.
 The 'inferredActivity' should be a concise sentence describing what the user is doing.
 The 'userActivityGoal' in 'activeInteractionContext' should be more specific about the immediate objective if inferable.
+If active text input by the user is identified, the 'activeUserTextEntry' field should contain this text. Otherwise, it should be null.
+${currentDirective ? `\\nREMEMBER THE CURRENT DIRECTIVE: "${currentDirective}". All interpretations must align with it.` : ''}
 Generate a new UUID for the 'id' field for each call. Use the current epoch milliseconds for 'timestamp'.
 FINAL REMINDER: Your entire response MUST BE ONLY the JSON object specified above. No extra text. Ensure all JSON syntax is correct, especially for strings, commas, and brackets/braces.
 `;
@@ -66,7 +72,8 @@ FINAL REMINDER: Your entire response MUST BE ONLY the JSON object specified abov
 export async function cognitiveParseScreenImage(
   base64ImageData: string,
   apexDoctrineContent: string | null,
-  captureMode: CaptureMode = 'screen'
+  captureMode: CaptureMode = 'screen',
+  currentDirective: string | null = null
 ): Promise<CognitiveParserOutput> {
   if (!API_KEY) {
     logger.error(COMPONENT_NAME, "cognitiveParseScreenImage", "Gemini API Key is not configured.");
@@ -74,10 +81,10 @@ export async function cognitiveParseScreenImage(
   }
   const startTime = Date.now();
   const imagePart = { inlineData: { mimeType: 'image/png', data: base64ImageData } };
-  let systemPrompt = COGNITIVE_PARSER_PROMPT_TEMPLATE(captureMode);
+  let systemPrompt = COGNITIVE_PARSER_PROMPT_TEMPLATE(captureMode, currentDirective);
   
   if (apexDoctrineContent) {
-    systemPrompt = `<apex_doctrine source="AI Agent Apex Doctrine (AAD) - v5.0">\n${apexDoctrineContent}\n</apex_doctrine>\n\n${systemPrompt}\nCRITICAL REMINDER: Your analysis, interpretations, and generated JSON output MUST strictly adhere to and align with the principles outlined in the <apex_doctrine> section above.`;
+    systemPrompt = `<apex_doctrine source="AI Agent Apex Doctrine (AAD) - v5.0">\\n${apexDoctrineContent}\\n</apex_doctrine>\\n\\n${systemPrompt}\\nCRITICAL REMINDER: Your analysis, interpretations, and generated JSON output MUST strictly adhere to and align with the principles outlined in the <apex_doctrine> section above.`;
   }
   
   const textPart = { text: "Describe the provided image according to the JSON schema in the system instructions. Output only the JSON object." };
@@ -95,7 +102,7 @@ export async function cognitiveParseScreenImage(
     });
 
     jsonStr = response.text ? response.text.trim() : "";
-    const fenceRegex = /^```(?:json)?\s*\n?(.*?)\n?\s*```$/s;
+    const fenceRegex = /^```(?:json)?\\s*\\n?(.*?)\\n?\\s*```$/s;
     const match = jsonStr.match(fenceRegex);
     if (match && match[1]) {
       jsonStr = match[1].trim();
@@ -105,7 +112,6 @@ export async function cognitiveParseScreenImage(
     const durationMs = Date.now() - startTime;
 
     if (!parsedOutput.id) parsedOutput.id = uuidv4();
-    // Fix: Replace undefined 'now' with 'Date.now()'
     if (!parsedOutput.timestamp) parsedOutput.timestamp = Date.now();
     parsedOutput.captureModeUsed = captureMode;
     if (!parsedOutput.inferredActivity) parsedOutput.inferredActivity = "Activity could not be determined";
@@ -113,7 +119,7 @@ export async function cognitiveParseScreenImage(
     if (!parsedOutput.uiElements) parsedOutput.uiElements = [];
     parsedOutput.aiCallDurationMs = durationMs;
     
-    logger.debug(COMPONENT_NAME, "cognitiveParseScreenImage", `Successfully parsed screen image in ${durationMs}ms.`, {id: parsedOutput.id, activity: parsedOutput.inferredActivity});
+    logger.debug(COMPONENT_NAME, "cognitiveParseScreenImage", `Successfully parsed screen image in ${durationMs}ms.`, {id: parsedOutput.id, activity: parsedOutput.inferredActivity, directiveUsed: currentDirective});
     return parsedOutput as CognitiveParserOutput;
 
   } catch (error: any) {
@@ -131,13 +137,21 @@ export async function cognitiveParseScreenImage(
   }
 }
 
-const TASK_CHRONOGRAPHER_PROMPT_TEMPLATE = (dynamicContextSummary: string, mainTaskHypothesisText: string) => `
-You are a Task Chronographer. Your role is to analyze the current Cognitive Screen Parser output, the user's dynamic context, and their main task hypothesis to update a list of ongoing tasks.
-Adhere to the self-iterative learning loop principles: use the evolving dynamic context and main task hypothesis to guide your decisions, aiming for emergent understanding.
+const TASK_CHRONOGRAPHER_PROMPT_TEMPLATE = (
+    dynamicContextSummary: string, 
+    mainTaskHypothesisText: string, 
+    metaIntentDescription?: string | null, 
+    metaIntentConfidence?: number | null,
+    currentDirective?: string | null
+) => `
+You are a Task Chronographer. Your role is to analyze the current Cognitive Screen Parser output, the user's dynamic context, their main task hypothesis, any identified meta-intent, and any active user-set directive to update a list of ongoing tasks.
+Adhere to the self-iterative learning loop principles: use the evolving dynamic context, main task hypothesis, meta-intent, and current directive to guide your decisions, aiming for emergent understanding.
 
 Current User State:
 Dynamic Context (Top Keywords/Themes): ${dynamicContextSummary || 'Not available.'}
 Main Task Hypothesis: ${mainTaskHypothesisText || 'Not yet determined.'}
+Meta-Intent (from recent activity sequence): ${metaIntentDescription && metaIntentConfidence ? `${metaIntentDescription} (Confidence: ${metaIntentConfidence.toFixed(2)})` : 'Not available or not confident.'}
+${currentDirective ? `Current User Directive: "${currentDirective}"` : ''}
 
 Current Cognitive Context from screen/camera:
 { /* JSON details of current context (inferredActivity, activeApplication, windowTitle, keyTexts, uiElements, activeInteractionContext) will be inserted here by the system */ }
@@ -151,23 +165,28 @@ Existing tasks list (summary):
   ...
 ]
 
-Based on ALL the above information (Apex Doctrine, User State, Cognitive Context, Current Keywords, Existing Tasks):
+Based on ALL the above information (Apex Doctrine, User State including Current Directive, Cognitive Context, Current Keywords, Existing Tasks):
 1. Task Identification & Updates:
-   - If the current activity directly relates to an existing task, update its 'latestContextId', 'lastUpdatedTimestamp'. Add a brief, distinct note to 'historySnapshots' describing the change or progress observed in the current context.
+   - If a Current User Directive is active, all task identifications and updates should be STRONGLY BIASED towards fulfilling or aligning with this directive.
+   - If the current activity directly relates to an existing task, update its 'latestContextId', 'lastUpdatedTimestamp'. Add a brief, distinct note to 'historySnapshots' describing the change or progress observed in the current context. Ensure this aligns with the Current User Directive if one is set.
    - If the 'Current Context Keywords' are relevant and not already present, append them to the task's 'keywords' field (ensure unique, max 10 total keywords per task).
-   - If a task was recently manually edited by the user (check 'userEditsHistory' for 'editSource: "user_manual"' entries, especially the latest one), PRIORITIZE these user changes for 'description' or 'status'. Do NOT revert them unless new context unequivocally signals task completion or a fundamental shift strongly aligned with the Main Task Hypothesis.
-   - If the current activity seems to start an existing 'To-Do' task (and it wasn't manually set to 'To-Do' recently), change its status to 'Doing'. Consider the Main Task Hypothesis for relevance.
-2. Task Completion: If a 'Doing' task appears completed based on the current activity and strongly aligns with the Main Task Hypothesis, change its status to 'Done'. Be conservative; prefer keeping tasks 'Doing' if completion isn't crystal clear.
-3. New Task Creation: If the current activity represents a new, distinct initiative, is relevant to the Main Task Hypothesis (or if no strong PMT, is a clear new activity of significance):
-   - Generate a concise, actionable 'description' (max 15-20 words).
+   - If a task was recently manually edited by the user (check 'userEditsHistory' for 'editSource: "user_manual"' entries, especially the latest one), PRIORITIZE these user changes for 'description' or 'status'. Do NOT revert them unless new context unequivocally signals task completion or a fundamental shift strongly aligned with the Main Task Hypothesis AND the Current User Directive.
+   - If the current activity seems to start an existing 'To-Do' task (and it wasn't manually set to 'To-Do' recently), change its status to 'Doing'. Consider the Main Task Hypothesis and Current User Directive for relevance.
+2. Task Completion: If a 'Doing' task appears completed based on the current activity and strongly aligns with the Main Task Hypothesis AND the Current User Directive (if set), change its status to 'Done'. Be conservative; prefer keeping tasks 'Doing' if completion isn't crystal clear.
+3. New Task Creation: If the current activity represents a new, distinct initiative:
+   - If a Current User Directive is active, any new task MUST directly contribute to or align with this directive. The directive should heavily influence the new task's description.
+   - STRONGLY CONSIDER the Meta-Intent. If a high-confidence Meta-Intent is present and aligns with the current activity (and the Current User Directive, if set), use its description as a basis for the new task, or ensure the new task clearly contributes to it.
+   - If no strong Meta-Intent, or it doesn't align, then consider if the activity is relevant to the Main Task Hypothesis (or if no strong PMT, is a clear new activity of significance).
+   - Generate a concise, actionable 'description' (max 15-20 words), heavily influenced by the Current User Directive if present.
    - Set status to 'Doing' (if activity is ongoing) or 'To-Do' (if it seems like a plan for immediate future action).
-   - Set 'confidence' (e.g., 0.7-0.9 based on clarity of intent).
+   - Set 'confidence' (e.g., 0.7-0.9 based on clarity of intent, potentially higher if strongly aligned with a directive).
    - Initialize 'historySnapshots' with a brief creation note (e.g., "Task identified from context: [brief context activity]").
    - Populate the 'keywords' field with the provided 'Current Context Keywords'.
 4. Avoid duplicate tasks. If unsure, try to relate to the closest existing task or update an existing one if the new activity is a direct continuation or refinement.
 5. Maintain timestamps. For new tasks, 'firstSeenTimestamp' and 'lastUpdatedTimestamp' are current. For updates, only 'lastUpdatedTimestamp' changes.
 6. 'historySnapshots' should be brief entries reflecting key context changes or task milestones, keeping the array concise (max 3-5 total, newest entries).
 7. Add 'userEditsHistory' with 'editSource: "chronographer_ai"' for significant AI-driven changes to description or status.
+${currentDirective ? `\\nREMEMBER THE CURRENT USER DIRECTIVE: "${currentDirective}". All task changes must align with it.` : ''}
 
 Respond with ONLY the updated JSON list of tasks. Ensure valid JSON. All JSON keys MUST be in double quotes.
 'id' for existing tasks must be unchanged. New tasks get a new UUID.
@@ -180,7 +199,9 @@ export async function updateTasksWithChronographer(
   apexDoctrineContent: string | null,
   dynamicContext: DynamicContextMemory,
   mainTaskHypothesis: PotentialMainTask | null,
-  currentKeywords: string[]
+  currentKeywords: string[],
+  metaIntentAnalysis?: MetaIntentAnalysis | null,
+  currentDirective?: string | null
 ): Promise<{ result: TaskItem[]; durationMs: number }> {
   if (!API_KEY) {
     logger.error(COMPONENT_NAME, "updateTasksWithChronographer", "Gemini API Key is not configured.");
@@ -205,9 +226,15 @@ export async function updateTasksWithChronographer(
   
   const mainTaskHypothesisText = mainTaskHypothesis ? `${mainTaskHypothesis.description} (Confidence: ${mainTaskHypothesis.weight.toFixed(2)}, Source: ${mainTaskHypothesis.source})` : "Not yet determined.";
 
-  let systemInstruction = TASK_CHRONOGRAPHER_PROMPT_TEMPLATE(dynamicContextSummary, mainTaskHypothesisText);
+  let systemInstruction = TASK_CHRONOGRAPHER_PROMPT_TEMPLATE(
+    dynamicContextSummary, 
+    mainTaskHypothesisText,
+    metaIntentAnalysis?.metaIntentDescription,
+    metaIntentAnalysis?.confidence,
+    currentDirective
+  );
   if (apexDoctrineContent) {
-    systemInstruction = `<apex_doctrine source="AI Agent Apex Doctrine (AAD) - v5.0">\n${apexDoctrineContent}\n</apex_doctrine>\n\n${systemInstruction}\nCRITICAL REMINDER: Your task updates MUST strictly adhere to and align with the principles outlined in the <apex_doctrine> section and the self-iterative learning loop principles. Prioritize user intent and the main task hypothesis.`;
+    systemInstruction = `<apex_doctrine source="AI Agent Apex Doctrine (AAD) - v5.0">\\n${apexDoctrineContent}\\n</apex_doctrine>\\n\\n${systemInstruction}\\nCRITICAL REMINDER: Your task updates MUST strictly adhere to and align with the principles outlined in the <apex_doctrine> section and the self-iterative learning loop principles. Prioritize user intent, the main task hypothesis, and the CURRENT USER DIRECTIVE (if set).`;
   }
 
   const promptContent = `
@@ -243,7 +270,7 @@ When updating a task, if you change its description or status, add an entry to i
     });
     
     jsonStrChronographer = response.text ? response.text.trim() : "";
-    const fenceRegex = /^```(?:json)?\s*\n?(.*?)\n?\s*```$/s;
+    const fenceRegex = /^```(?:json)?\\s*\\n?(.*?)\\n?\\s*```$/s;
     const match = jsonStrChronographer.match(fenceRegex);
     if (match && match[1]) {
       jsonStrChronographer = match[1].trim();
@@ -255,8 +282,8 @@ When updating a task, if you change its description or status, add an entry to i
       let existingTask = currentTasks.find(t => t.id === llmTask.id);
       const now = Date.now();
       
-      let finalKeywords = llmTask.keywords || []; // Keywords from LLM (might include merged)
-      if (!llmTask.keywords && !existingTask) { // New task and LLM didn't assign keywords
+      let finalKeywords = llmTask.keywords || []; 
+      if (!llmTask.keywords && !existingTask) { 
         finalKeywords = currentKeywords.slice(0,10);
       }
 
@@ -271,8 +298,8 @@ When updating a task, if you change its description or status, add an entry to i
           }
           
           const baseKeywords = (llmTask.status === existingTask.status && llmTask.description === existingTask.description) ? 
-                                (existingTask.keywords || []) : // If no core change, keep existing keywords as base
-                                []; // Else, let LLM provide keywords, or use currentKeywords for new content
+                                (existingTask.keywords || []) : 
+                                []; 
           
           const mergedKeywords = new Set([...baseKeywords, ...finalKeywords, ...(aiEditHistory.length > 0 ? currentKeywords : [])]);
 
@@ -293,7 +320,7 @@ When updating a task, if you change its description or status, add an entry to i
             tags: llmTask.tags !== undefined ? llmTask.tags : existingTask.tags,
             priority: llmTask.priority !== undefined ? llmTask.priority : existingTask.priority,
           } as TaskItem;
-      } else { // New task
+      } else { 
           return {
             id: llmTask.id || uuidv4(),
             description: llmTask.description || "Untitled Task from Chronographer",
@@ -313,7 +340,7 @@ When updating a task, if you change its description or status, add an entry to i
       }
     });
     const durationMs = Date.now() - startTime;
-    logger.debug(COMPONENT_NAME, "updateTasksWithChronographer", `Chronographer updated tasks in ${durationMs}ms. Output count: ${processedTasks.length}`);
+    logger.debug(COMPONENT_NAME, "updateTasksWithChronographer", `Chronographer updated tasks in ${durationMs}ms. Output count: ${processedTasks.length}. Directive: ${currentDirective}`);
     return { result: processedTasks, durationMs };
 
   } catch (error: any) {
@@ -333,22 +360,30 @@ When updating a task, if you change its description or status, add an entry to i
   }
 }
 
-const SUGGESTION_GENERATOR_PROMPT_TEMPLATE = (dynamicContextSummary: string, mainTaskHypothesisText: string) => `
+const SUGGESTION_GENERATOR_PROMPT_TEMPLATE = (
+    dynamicContextSummary: string, 
+    mainTaskHypothesisText: string,
+    currentDirective: string | null
+) => `
 You are an AI assistant providing contextual suggestions, guided by self-iterative learning loop principles and the AI Agent Apex Doctrine.
-Based on the user's current activity, inferred goal, dynamic context, and main task hypothesis, provide 3-5 concise, actionable suggestions.
-These suggestions should be next steps, related information to look up, relevant tools, or efficiency tips, all aligned with the user's primary focus as indicated by the Main Task Hypothesis and Dynamic Context.
+Based on the user's current activity, inferred goal, dynamic context, main task hypothesis, and any current user-set directive, provide 3-5 concise, actionable suggestions.
+These suggestions should be next steps, related information to look up, relevant tools, or efficiency tips, all aligned with the user's primary focus.
 
 User State:
 Dynamic Context (Top Keywords/Themes): ${dynamicContextSummary || 'Not available.'}
 Main Task Hypothesis: ${mainTaskHypothesisText || 'Not yet determined.'}
+${currentDirective ? `Current User Directive: "${currentDirective}"` : ''}
 
 Current User Activity Details:
 Activity Description: {ACTIVITY_DESCRIPTION}
 User's Inferred Goal for this Activity: {INTERACTION_GOAL}
 
 Respond with a JSON array of strings, where each string is a suggestion (max 15 words per suggestion). Example: ["Search for 'Gemini API pricing'", "Open Slack and message your team lead about the deadline", "Save the current document as 'final_report_v2.docx'", "Consider using a mind map for brainstorming"].
-Ensure your suggestions are highly relevant to the Main Task Hypothesis and current activity. Be specific and actionable. Avoid generic suggestions.
-If the main task hypothesis is clear, tailor suggestions directly to it. If it's less clear, provide suggestions that help clarify or advance the current inferred activity.
+Ensure your suggestions are highly relevant to the Main Task Hypothesis, current activity, AND THE CURRENT USER DIRECTIVE (if set). Be specific and actionable. Avoid generic suggestions.
+If the Current User Directive is set, suggestions MUST align with or support this directive above other factors.
+If no directive, and the main task hypothesis is clear, tailor suggestions directly to it. 
+If neither is strong, provide suggestions that help clarify or advance the current inferred activity.
+${currentDirective ? `\\nREMEMBER THE CURRENT USER DIRECTIVE: "${currentDirective}". All suggestions must align with it.` : ''}
 `;
 
 export async function generateContextualSuggestions(
@@ -356,7 +391,8 @@ export async function generateContextualSuggestions(
   dynamicContext: DynamicContextMemory,
   mainTaskHypothesis: PotentialMainTask | null,
   interactionContext?: ActiveInteractionContext,
-  activityDescription?: string
+  activityDescription?: string,
+  currentDirective?: string | null
 ): Promise<{result: string[]; durationMs: number}> {
   if (!API_KEY) {
     logger.error(COMPONENT_NAME, "generateContextualSuggestions", "Gemini API Key is not configured.");
@@ -380,12 +416,16 @@ export async function generateContextualSuggestions(
   const mainTaskHypothesisText = mainTaskHypothesis ? `${mainTaskHypothesis.description} (Confidence: ${mainTaskHypothesis.weight.toFixed(2)}, Source: ${mainTaskHypothesis.source})` : "Not yet determined.";
 
 
-  let systemInstruction = SUGGESTION_GENERATOR_PROMPT_TEMPLATE(dynamicContextSummary, mainTaskHypothesisText)
-    .replace("{ACTIVITY_DESCRIPTION}", activity.substring(0, 200)) // Limit length for prompt
-    .replace("{INTERACTION_GOAL}", goal.substring(0, 150)); // Limit length
+  let systemInstruction = SUGGESTION_GENERATOR_PROMPT_TEMPLATE(
+      dynamicContextSummary, 
+      mainTaskHypothesisText,
+      currentDirective !== undefined ? currentDirective : null
+    )
+    .replace("{ACTIVITY_DESCRIPTION}", activity.substring(0, 200)) 
+    .replace("{INTERACTION_GOAL}", goal.substring(0, 150)); 
 
   if (apexDoctrineContent) {
-    systemInstruction = `<apex_doctrine source="AI Agent Apex Doctrine (AAD) - v5.0">\n${apexDoctrineContent}\n</apex_doctrine>\n\n${systemInstruction}\nCRITICAL REMINDER: Your suggestions MUST strictly adhere to and align with the principles outlined in the <apex_doctrine> section and the self-iterative learning loop principles. Focus on helpful, relevant, and ethical suggestions.`;
+    systemInstruction = `<apex_doctrine source="AI Agent Apex Doctrine (AAD) - v5.0">\\n${apexDoctrineContent}\\n</apex_doctrine>\\n\\n${systemInstruction}\\nCRITICAL REMINDER: Your suggestions MUST strictly adhere to and align with the principles outlined in the <apex_doctrine> section, the self-iterative learning loop principles, and the CURRENT USER DIRECTIVE (if set). Focus on helpful, relevant, and ethical suggestions.`;
   }
   
   let jsonStrSuggestions = "";
@@ -400,7 +440,7 @@ export async function generateContextualSuggestions(
     });
 
     jsonStrSuggestions = response.text ? response.text.trim() : "";
-    const fenceRegex = /^```(?:json)?\s*\n?(.*?)\n?\s*```$/s;
+    const fenceRegex = /^```(?:json)?\\s*\\n?(.*?)\\n?\\s*```$/s;
     const match = jsonStrSuggestions.match(fenceRegex);
     if (match && match[1]) {
       jsonStrSuggestions = match[1].trim();
@@ -412,7 +452,7 @@ export async function generateContextualSuggestions(
         return {result: [], durationMs: Date.now() - startTime};
     }
     const durationMs = Date.now() - startTime;
-    logger.debug(COMPONENT_NAME, "generateContextualSuggestions", `Successfully generated ${suggestions.length} suggestions in ${durationMs}ms.`, suggestions);
+    logger.debug(COMPONENT_NAME, "generateContextualSuggestions", `Successfully generated ${suggestions.length} suggestions in ${durationMs}ms. Directive: ${currentDirective}`, suggestions);
     return {result: suggestions.slice(0, 5), durationMs};
 
   } catch (error: any) {

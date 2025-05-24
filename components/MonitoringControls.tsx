@@ -1,5 +1,4 @@
-
-import React from 'react';
+import React, { useState } from 'react';
 import { LoadingSpinner } from './LoadingSpinner';
 import type { CaptureMode } from '../types';
 
@@ -20,6 +19,8 @@ interface MonitoringControlsProps {
   disabledAllControls?: boolean; 
   onOpenNudgeModal: () => void; 
   topPMTDescription?: string; // This prop might not be directly used in statusMessage here if App.tsx handles it
+  currentDirective: string | null;
+  onSetCurrentDirective: (directive: string | null) => void;
 }
 
 export const MonitoringControls: React.FC<MonitoringControlsProps> = ({
@@ -38,8 +39,11 @@ export const MonitoringControls: React.FC<MonitoringControlsProps> = ({
   onSetCaptureMode,
   disabledAllControls,
   onOpenNudgeModal,
-  // topPMTDescription prop is available if direct display logic is preferred here
-}) => {
+  currentDirective,
+  onSetCurrentDirective,
+}: MonitoringControlsProps) => {
+  const [directiveInput, setDirectiveInput] = useState('');
+
   const baseButtonClass = "px-4 py-2 text-sm sm:px-5 sm:py-2.5 sm:text-base font-semibold rounded-lg shadow-md transform transition-all duration-300 ease-in-out flex items-center justify-center hover:scale-105 active:scale-95 focus:outline-none focus:ring-4 focus:ring-opacity-50 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100";
   
   const anyProcessingWhichDisablesSettings = isProcessing || isStarting || disabledAllControls;
@@ -48,6 +52,23 @@ export const MonitoringControls: React.FC<MonitoringControlsProps> = ({
   const disableStop = disabledAllControls && !isMonitoring; // Only truly disable if master disable is on AND not monitoring (e.g. error state)
   const disableManualCapture = (isProcessing && isMonitoring) || (isCapturingFrame && !isMonitoring) || disabledAllControls;
 
+  const handleSetDirective = () => {
+    if (directiveInput.trim()) {
+      onSetCurrentDirective(directiveInput.trim());
+    } else {
+      onSetCurrentDirective(null); // Clear if input is empty/whitespace
+    }
+  };
+
+  const handleClearDirective = () => {
+    setDirectiveInput('');
+    onSetCurrentDirective(null);
+  };
+
+  // Effect to initialize input when directive changes externally
+  React.useEffect(() => {
+    setDirectiveInput(currentDirective || '');
+  }, [currentDirective]);
 
   return (
     <div className="w-full flex flex-col items-center space-y-3 bg-slate-850 rounded-lg shadow-md p-3 sm:p-4 mb-3">
@@ -143,6 +164,40 @@ export const MonitoringControls: React.FC<MonitoringControlsProps> = ({
           Settings
         </button>
       </div>
+
+      {/* Current Directive Input Area */}
+      <div className="w-full flex flex-col sm:flex-row items-stretch sm:items-center gap-2 mt-2 px-1 sm:px-0">
+        <input 
+          type="text"
+          placeholder="Set a current directive for the AI... (e.g., focus on bug fixing)"
+          value={directiveInput}
+          onChange={(e) => setDirectiveInput(e.target.value)}
+          className="flex-grow p-2 text-sm bg-slate-700 border border-slate-600 rounded-md text-slate-100 focus:ring-sky-500 focus:border-sky-500 placeholder-slate-400 disabled:opacity-70"
+          disabled={disabledAllControls}
+          aria-label="Current AI Directive Input"
+        />
+        <div className="flex items-center gap-2">
+            <button 
+                onClick={handleSetDirective}
+                disabled={disabledAllControls || (!directiveInput.trim() && !currentDirective)}
+                className={`${baseButtonClass} bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white focus:ring-blue-300 text-xs px-3 py-1.5 sm:px-4 sm:py-2`}
+                aria-label="Set or Update Current AI Directive"
+            >
+                {currentDirective && directiveInput.trim() === currentDirective ? "Directive Set" : (currentDirective && !directiveInput.trim() ? "Clear Directive" : "Set Directive")}
+            </button>
+            {currentDirective && (
+                <button 
+                    onClick={handleClearDirective}
+                    disabled={disabledAllControls}
+                    className={`${baseButtonClass} bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white focus:ring-amber-300 text-xs px-3 py-1.5 sm:px-4 sm:py-2`}
+                    aria-label="Clear Current AI Directive"
+                >
+                    Clear
+                </button>
+            )}
+        </div>
+      </div>
+
       <div className="text-xs sm:text-sm text-slate-400 flex items-center flex-wrap justify-center sm:justify-start pt-1 sm:pt-2 min-h-[20px] text-center sm:text-left" aria-live="polite">
         {(isProcessing || isStarting || (isCapturingFrame && !isMonitoring) ) && <LoadingSpinner size="sm" color="text-sky-400"/>}
         <span className={`ml-2 ${(isProcessing || isStarting) ? 'italic' : ''}`}>{statusMessage}</span>

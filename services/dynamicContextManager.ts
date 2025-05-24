@@ -1,4 +1,3 @@
-
 import { v4 as uuidv4 } from 'uuid';
 import type { CognitiveParserOutput, DynamicContextMemory, DynamicContextItem, PotentialMainTask, UserNudgeInput, TaskItem } from '../types';
 import { logger } from './logger';
@@ -13,7 +12,7 @@ const MIN_PMT_WEIGHT_TO_KEEP = 0.1;
 const MAX_PMTS_TO_TRACK = 7; 
 // MAX_KEYWORDS_IN_DCM is similarly now a guideline for consumers, not for pruning the memory itself.
 const MAX_KEYWORDS_IN_DCM = 75; // Consumers can use this default for how many top keywords to consider.
-const PMT_REINFORCEMENT_THRESHOLD = 0.05; 
+const PMT_REINFORCEMENT_THRESHOLD = 0.30; // Min score to consider a task related
 const PMT_NEW_INFERENCE_WEIGHT = 0.25;
 const PMT_USER_CONFIRM_BOOST = 0.85; // How much to boost a confirmed PMT and reduce others
 const PMT_USER_CREATED_WEIGHT = 0.98;
@@ -22,7 +21,6 @@ const KEYWORD_GOAL_BOOST = 0.3;
 const KEYWORD_ACTIVITY_BOOST = 0.15;
 const KEYWORD_KEYTEXT_BOOST = 0.1;
 const RELATED_TASK_SUGGESTION_COUNT = 3;
-const SIMILARITY_SCORE_THRESHOLD = 0.30; // Min score to consider a task related
 
 const STOP_WORDS = new Set(['a', 'an', 'the', 'is', 'was', 'are', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'can', 'could', 'may', 'might', 'must', 'and', 'but', 'or', 'nor', 'for', 'so', 'yet', 'if', 'then', 'else', 'when', 'where', 'why', 'how', 'what', 'which', 'who', 'whom', 'whose', 'this', 'that', 'these', 'those', 'in', 'on', 'at', 'by', 'from', 'to', 'with', 'about', 'above', 'after', 'again', 'against', 'all', 'am', 'any', 'as', 'because', 'before', 'below', 'between', 'both', 'com', 'cannot', 'down', 'during', 'each', 'few', 'further', 'here', 'http', 'https', 'i', 'into', 'it', 'its', 'itself', 'just', 'like', 'me', 'more', 'most', 'my', 'myself', 'no', 'not', 'now', 'of', 'off', 'once', 'only', 'other', 'ought', 'our', 'ours', 'ourselves', 'out', 'over', 'own', 'same', 'she', "s", "t", 'some', 'such', 'than', 'their', 'theirs', 'them', 'themselves', 'then', 'there', 'therefore', 'they', 'through', 'too', 'under', 'until', 'up', 'very', 'we', 'were', 'www', 'you', 'your', 'yours', 'yourself', 'yourselves', 'user', 'using', 'screen', 'capture', 'image', 'window', 'title', 'text', 'button', 'label', 'element', 'type', 'file', 'document', 'page', 'untitled', 'new', 'app', 'click', 'select', 'open', 'close', 'save', 'edit', 'view', 'manage', 'list', 'item', 'items', 'data', 'field', 'value', 'main', 'menu', 'tab', 'section', 'option', 'setting', 'config', 'form', 'input', 'output', 'log', 'error', 'message', 'details', 'overview', 'summary', 'report', 'analysis', 'test', 'dev', 'build', 'run', 'start', 'stop', 'process', 'update', 'create', 'delete', 'remove', 'add', 'get', 'set', 'send', 'receive', 'request', 'response', 'api', 'key', 'url', 'link', 'content', 'context', 'task', 'tasks', 'project', 'goal', 'plan', 'step', 'action', 'activity', 'mode', 'status', 'current', 'previous', 'next', 'first', 'last', 'number', 'string', 'object', 'array', 'null', 'undefined', 'true', 'false', 'system', 'chrome', 'google', 'microsoft', 'word', 'excel', 'vscode', 'code', 'script', 'python', 'javascript', 'typescript', 'react', 'node']);
 
@@ -108,6 +106,95 @@ export function extractKeywordsFromContext(context: CognitiveParserOutput): stri
     return finalKeywords.filter(kw => !toRemove.has(kw)).slice(0, 15); // Limit initial extraction
 }
 
+export interface MetaIntentAnalysis {
+    metaIntentDescription: string | null;
+    confidence: number;
+    contributingKeywords: string[];
+    sourceContextIds: string[];
+}
+
+export function analyzeSequentialContextForMetaIntent(
+    recentContexts: CognitiveParserOutput[], // Expects recent contexts, e.g., last 3-5, ordered oldest to newest
+    sequenceLengthThreshold: number = 3 // Minimum number of contexts to consider for a sequence
+): MetaIntentAnalysis {
+    const analysisOutput: MetaIntentAnalysis = {
+        metaIntentDescription: null,
+        confidence: 0,
+        contributingKeywords: [],
+        sourceContextIds: []
+    };
+
+    if (recentContexts.length < sequenceLengthThreshold) {
+        logger.debug(COMPONENT_NAME, "analyzeSequentialContextForMetaIntent", `Not enough recent contexts (${recentContexts.length}) to analyze. Threshold: ${sequenceLengthThreshold}`);
+        return analysisOutput;
+    }
+
+    const allKeywordsAcrossSequence: string[] = [];
+    const keywordFrequency = new Map<string, number>();
+    const activeTextEntries: Array<string | null | undefined> = [];
+    const sourceContextIds = recentContexts.map(ctx => ctx.id);
+
+    recentContexts.forEach(context => {
+        const keywords = extractKeywordsFromContext(context);
+        keywords.forEach(kw => {
+            allKeywordsAcrossSequence.push(kw);
+            keywordFrequency.set(kw, (keywordFrequency.get(kw) || 0) + 1);
+        });
+        if(context.activeUserTextEntry && context.activeUserTextEntry.trim().length > 3) { // Consider non-empty, meaningful entries
+            activeTextEntries.push(context.activeUserTextEntry.trim().toLowerCase());
+        }
+    });
+
+    const frequentKeywords = Array.from(keywordFrequency.entries())
+        .filter(([, count]) => count >= Math.max(1, Math.floor(recentContexts.length * 0.5))) // Appears in at least 50% of contexts (min 1)
+        .sort(([, countA], [, countB]) => countB - countA)
+        .map(([kw]) => kw);
+
+    analysisOutput.contributingKeywords = frequentKeywords.slice(0, 5); // Top 5 frequent keywords
+    analysisOutput.sourceContextIds = sourceContextIds;
+
+    // Initial simple strategy: If there are frequent keywords, form a basic description
+    // More sophisticated analysis can be added later (e.g., using an LLM to summarize themes)
+    if (analysisOutput.contributingKeywords.length > 0) {
+        // Check for consistent activeUserTextEntry
+        if (activeTextEntries.length >= Math.floor(recentContexts.length * 0.6)) { // Present in most contexts
+            const mostCommonActiveText = activeTextEntries
+                .reduce((acc, text) => {
+                    if(text) acc.set(text, (acc.get(text) || 0) + 1);
+                    return acc;
+                }, new Map<string, number>());
+            
+            let dominantText: string | null = null;
+            let maxCount = 0;
+            mostCommonActiveText.forEach((count, text) => {
+                if (count > maxCount) {
+                    maxCount = count;
+                    dominantText = text;
+                }
+            });
+
+            if (dominantText && maxCount >= Math.floor(activeTextEntries.length * 0.75)) { // A single text entry is highly dominant
+                analysisOutput.metaIntentDescription = `User focused on: "${dominantText}" (related to: ${analysisOutput.contributingKeywords.join(", ")})`;
+                analysisOutput.confidence = 0.7;
+            } else if (analysisOutput.contributingKeywords.length > 1 ) {
+                 analysisOutput.metaIntentDescription = `User activity related to: ${analysisOutput.contributingKeywords.join(", ")}`;
+                 analysisOutput.confidence = 0.5;
+            }
+        } else if (analysisOutput.contributingKeywords.length > 1) {
+            analysisOutput.metaIntentDescription = `User activity involves themes: ${analysisOutput.contributingKeywords.join(", ")}`;
+            analysisOutput.confidence = 0.4;
+        }
+    }
+    
+    if(analysisOutput.metaIntentDescription) {
+        logger.info(COMPONENT_NAME, "analyzeSequentialContextForMetaIntent", `Meta-intent identified: '${analysisOutput.metaIntentDescription}'. Confidence: ${analysisOutput.confidence.toFixed(2)}`, { keywords: analysisOutput.contributingKeywords });
+    } else {
+        logger.debug(COMPONENT_NAME, "analyzeSequentialContextForMetaIntent", "No clear meta-intent identified from sequential context.");
+    }
+
+    return analysisOutput;
+}
+
 export function updateDynamicContextMemory(
     context: CognitiveParserOutput,
     currentMemory: DynamicContextMemory
@@ -168,7 +255,8 @@ export function updatePotentialMainTasks(
     context: CognitiveParserOutput | null, // Null if only applying nudge
     currentMemory: DynamicContextMemory,
     currentPmts: PotentialMainTask[],
-    nudge?: UserNudgeInput | null
+    nudge?: UserNudgeInput | null,
+    metaIntent?: MetaIntentAnalysis | null // New parameter for meta-intent analysis
 ): PotentialMainTask[] {
     const now = Date.now();
     let updatedPmts = [...currentPmts];
@@ -223,53 +311,75 @@ export function updatePotentialMainTasks(
     if (context) {
         const contextGoal = context.activeInteractionContext?.userActivityGoal;
         const contextActivity = context.inferredActivity;
-        const relevantTextForPmt = contextGoal || contextActivity;
+        // Prioritize meta-intent description if available and confident
+        let relevantTextForPmt = (metaIntent && metaIntent.metaIntentDescription && metaIntent.confidence >= 0.5) 
+            ? metaIntent.metaIntentDescription 
+            : (contextGoal || contextActivity);
 
         if (relevantTextForPmt && relevantTextForPmt.length > 10) { // Min length for a meaningful PMT description
             let reinforcedExisting = false;
+            const pmtDescriptionForComparison = relevantTextForPmt.toLowerCase();
+
             for (const pmt of updatedPmts) {
-                // Simple similarity: check if PMT description is a substring or vice-versa, or significant overlap
                 const pmtDescLower = pmt.description.toLowerCase();
-                const relevantTextLower = relevantTextForPmt.toLowerCase();
                 let similarity = 0;
-                if (pmtDescLower.includes(relevantTextLower) || relevantTextLower.includes(pmtDescLower)) {
+                if (pmtDescLower.includes(pmtDescriptionForComparison) || pmtDescriptionForComparison.includes(pmtDescLower)) {
                     similarity = 0.7; 
-                } else { // Check word overlap with DCM keywords
-                    const pmtWords = new Set(extractKeywordsFromContext({ inferredActivity: pmt.description } as CognitiveParserOutput));
-                    const contextKeywords = new Set(extractKeywordsFromContext(context));
-                    const intersection = new Set([...pmtWords].filter(x => contextKeywords.has(x)));
-                    if (pmtWords.size > 0 && contextKeywords.size > 0) {
-                        similarity = intersection.size / Math.min(pmtWords.size, contextKeywords.size);
+                } else { 
+                    const pmtKeywords = new Set(extractKeywordsFromContext({ inferredActivity: pmt.description, activeUserTextEntry: pmt.description } as CognitiveParserOutput));
+                    // Use metaIntent keywords if available and relevant, otherwise use current context keywords
+                    const comparisonKeywords = (metaIntent && metaIntent.confidence >= 0.4 && metaIntent.contributingKeywords.length > 0) 
+                        ? new Set(metaIntent.contributingKeywords) 
+                        : new Set(extractKeywordsFromContext(context));
+                    
+                    const intersection = new Set([...pmtKeywords].filter(x => comparisonKeywords.has(x)));
+                    if (pmtKeywords.size > 0 && comparisonKeywords.size > 0) {
+                        similarity = intersection.size / Math.min(pmtKeywords.size, comparisonKeywords.size);
                     }
                 }
 
-                if (similarity > PMT_REINFORCEMENT_THRESHOLD) { // Lower threshold for reinforcement than new creation
-                    pmt.weight = Math.min(1, pmt.weight + (PMT_NEW_INFERENCE_WEIGHT * 0.5 * similarity) * (pmt.source === 'user_confirmed' || pmt.source === 'user_created' ? 0.5 : 1)); // Reinforce less if user-set
+                if (similarity > PMT_REINFORCEMENT_THRESHOLD) {
+                    let reinforcementFactor = PMT_NEW_INFERENCE_WEIGHT * 0.5 * similarity;
+                    if (metaIntent && metaIntent.confidence > 0.5 && similarity > 0.5) { // Stronger reinforcement if meta-intent aligns
+                        reinforcementFactor *= (1 + metaIntent.confidence); // Boost by meta-intent confidence
+                    }
+                    pmt.weight = Math.min(1, pmt.weight + reinforcementFactor * (pmt.source === 'user_confirmed' || pmt.source === 'user_created' ? 0.5 : 1)); 
                     pmt.lastReinforcedTimestamp = now;
                     pmt.contributingContextIds.add(context.id);
+                    if (metaIntent && metaIntent.sourceContextIds) metaIntent.sourceContextIds.forEach(id => pmt.contributingContextIds.add(id));
                     reinforcedExisting = true;
-                    logger.debug(COMPONENT_NAME, "updatePotentialMainTasks", `Reinforced PMT: '${pmt.description.substring(0,30)}...' New W: ${pmt.weight.toFixed(3)} (Sim: ${similarity.toFixed(2)})`);
+                    logger.debug(COMPONENT_NAME, "updatePotentialMainTasks", `Reinforced PMT '${pmt.description.substring(0,20)}...' (similarity: ${similarity.toFixed(2)}, meta-intent factor: ${metaIntent ? metaIntent.confidence.toFixed(2) : 'N/A'}). New weight: ${pmt.weight.toFixed(2)}`);
                 }
             }
 
-            // If no existing PMT was strongly reinforced and the activity is distinct enough, infer a new one
-            // Ensure it's not too similar to an existing user-created/confirmed one to avoid clutter
-            const isVerySimilarToUserPmt = updatedPmts.some(pmt => 
-                (pmt.source === 'user_created' || pmt.source === 'user_confirmed') &&
-                (pmt.description.toLowerCase().includes(relevantTextForPmt.toLowerCase()) || relevantTextForPmt.toLowerCase().includes(pmt.description.toLowerCase()))
-            );
+            // If no existing PMT was strongly reinforced and the (meta)intent seems new and clear
+            if (!reinforcedExisting && relevantTextForPmt) {
+                // Check if a very similar PMT already exists, even if not reinforced above
+                const alreadyExists = updatedPmts.some(pmt => 
+                    pmt.description.toLowerCase().includes(pmtDescriptionForComparison.substring(0, Math.max(15, pmtDescriptionForComparison.length * 0.7))) ||
+                    pmtDescriptionForComparison.includes(pmt.description.toLowerCase().substring(0, Math.max(15, pmt.description.length * 0.7)))
+                );
 
-            if (!reinforcedExisting && !isVerySimilarToUserPmt) {
-                const newPmt: PotentialMainTask = {
-                    id: uuidv4(),
-                    description: relevantTextForPmt.length > 100 ? relevantTextForPmt.substring(0,100) + "..." : relevantTextForPmt, // Truncate long activities
-                    source: 'ai_inferred',
-                    weight: PMT_NEW_INFERENCE_WEIGHT,
-                    lastReinforcedTimestamp: now,
-                    contributingContextIds: new Set([context.id])
-                };
-                updatedPmts.push(newPmt);
-                logger.debug(COMPONENT_NAME, "updatePotentialMainTasks", `Inferred new PMT: '${newPmt.description.substring(0,30)}...'`);
+                let newPmtWeight = PMT_NEW_INFERENCE_WEIGHT;
+                if (metaIntent && metaIntent.metaIntentDescription && metaIntent.confidence >= 0.5 && relevantTextForPmt === metaIntent.metaIntentDescription) {
+                    newPmtWeight = Math.min(0.9, PMT_NEW_INFERENCE_WEIGHT + metaIntent.confidence * 0.5); // Higher initial weight if from strong meta-intent
+                    logger.info(COMPONENT_NAME, "updatePotentialMainTasks", `Creating new PMT from meta-intent: '${relevantTextForPmt.substring(0,30)}...'`, { weight: newPmtWeight });
+                } else {
+                    logger.info(COMPONENT_NAME, "updatePotentialMainTasks", `Creating new PMT from context: '${relevantTextForPmt.substring(0,30)}...'`, { weight: newPmtWeight });
+                }
+
+                if (!alreadyExists && newPmtWeight > 0.2) { // Threshold for creating new PMT
+                    const newPmt: PotentialMainTask = {
+                        id: uuidv4(),
+                        description: relevantTextForPmt, 
+                        source: 'ai_inferred',
+                        weight: newPmtWeight,
+                        lastReinforcedTimestamp: now,
+                        contributingContextIds: new Set([context.id])
+                    };
+                    if (metaIntent && metaIntent.sourceContextIds) metaIntent.sourceContextIds.forEach(id => newPmt.contributingContextIds.add(id));
+                    updatedPmts.push(newPmt);
+                }
             }
         }
     }
@@ -359,7 +469,7 @@ export function suggestRelatedTasks(
             reasons.push(`DCM relevance (${(dcmOverlapWithOther*100).toFixed(0)}%)`);
         }
 
-        if (score > SIMILARITY_SCORE_THRESHOLD) {
+        if (score > PMT_REINFORCEMENT_THRESHOLD) {
             suggestions.push({ task: otherTask, score, reason: reasons.length > 0 ? reasons.join(', ') : "General similarity" });
         }
     }
