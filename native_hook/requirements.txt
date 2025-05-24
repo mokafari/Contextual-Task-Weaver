@@ -1,5 +1,9 @@
+pyobjc>=11.0
 websockets>=12.0
 pyobjc-core>=10.2
-pyobjc-framework-AppKit>=10.2
+pyobjc-framework-Cocoa>=11.0
+pyobjc-framework-Quartz
+watchdog>=3.0.0 
+websockets>=12.0   # For file system monitoring
 # Add other Python dependencies for the hook here as we need them
 # e.g., pyobjc-framework-ApplicationServices, etc. 

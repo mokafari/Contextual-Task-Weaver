@@ -55,12 +55,20 @@ Contextual Task Weaver is an AI-powered Emergent Task Management System (ETMS) d
 *   **Language:** TypeScript
 *   **Styling:** TailwindCSS
 *   **AI:** Google Gemini API (`@google/genai`)
+*   **Backend (Native Hook):** Python 3.9+ (specifically for macOS)
+    *   `pyobjc-framework-Cocoa` for macOS native interactions.
+    *   `websockets` for communication with the frontend.
+    *   `watchdog` for potential future file system monitoring.
 *   **State Management:** React Hooks (`useState`, `useEffect`, `useCallback`, `useRef`)
 *   **Dependencies:** Managed via `package.json` (e.g., `uuid` for generating unique IDs).
 
 ## Setup and Running
 
-1.  **API Key:**
+This application consists of a React frontend and a Python-based native hook for macOS interactions. Both need to be set up and running.
+
+**1. Frontend (React Application):**
+
+*   **API Key:**
     *   This application requires a Google Gemini API key.
     *   Create a `.env` file in the project root.
     *   Add your API key to the `.env` file like this:
@@ -69,18 +77,55 @@ Contextual Task Weaver is an AI-powered Emergent Task Management System (ETMS) d
         ```
     *   The application accesses this key via `import.meta.env.VITE_API_KEY`.
 
-2.  **Dependencies:**
-    *   Install dependencies using npm (or your preferred package manager):
+*   **Dependencies:**
+    *   Install dependencies using npm (or your preferred package manager) from the project root:
         ```bash
         npm install
         ```
 
-3.  **Running the Application:**
-    *   Start the Vite development server:
+*   **Running the Frontend:**
+    *   Start the Vite development server from the project root:
         ```bash
         npm run dev
         ```
     *   Open the provided local URL (usually `http://localhost:5173/`) in a modern web browser that supports screen capture and camera access.
+
+**2. Backend (Python Native Hook - macOS only):**
+
+The native hook enables deeper interaction with the macOS operating system, such as simulating mouse clicks or typing.
+
+*   **Python Version:**
+    *   It's recommended to use Python 3.9 or newer. Python 3.11.9 is known to work well.
+    *   If you encounter issues with Python versions, using a version manager like `pyenv` is highly recommended. For example:
+        ```bash
+        # Install a specific Python version (if not already installed)
+        pyenv install 3.11.9
+        # Set it as the local version for the hook's directory
+        cd native_hook
+        pyenv local 3.11.9
+        cd ..
+        ```
+
+*   **Dependencies:**
+    *   Navigate to the `native_hook` directory:
+        ```bash
+        cd native_hook
+        ```
+    *   Install Python dependencies using pip (preferably within a virtual environment):
+        ```bash
+        pip install -r requirements.txt
+        ```
+    *   If you used `pyenv local` in the previous step, ensure pip corresponds to that Python version.
+
+*   **Running the Native Hook:**
+    *   From within the `native_hook` directory, run:
+        ```bash
+        python3 main_hook.py
+        ```
+        (Or `python main_hook.py` if `python` points to your desired Python 3.9+ version).
+    *   This server will run in the foreground by default. You might want to run it in the background for convenience during development (e.g., `python3 main_hook.py &`). It typically listens on `ws://localhost:8765`.
+
+**Both the frontend Vite server and the Python `main_hook.py` server must be running concurrently for the application to be fully functional.**
 
 ## Key Files and Folder Structure
 
@@ -111,7 +156,32 @@ Contextual Task Weaver is an AI-powered Emergent Task Management System (ETMS) d
     *   `dynamicContextManager.ts`: Manages the dynamic context memory, potential main tasks, and meta-intent analysis.
     *   `logger.ts`: Basic structured logging utility.
     *   `documentFetcher.ts`: Utility for fetching external documents like Harmonia Digitalis.
+*   **`native_hook/`**: Contains the Python-based backend for macOS native interactions.
+    *   `main_hook.py`: The WebSocket server that listens for commands from the frontend and interacts with the OS.
+    *   `requirements.txt`: Python dependencies for the native hook.
+    *   `os_computer_use/`: Modules for specific OS interactions (e.g., mouse, keyboard).
 *   **`types/` is now `types.ts` at the root.** (Correction: this line is redundant as types.ts is already listed above)
+
+## Troubleshooting
+
+*   **Gemini API Error: "Unknown name 'config'..." (or similar 400 Bad Request errors from `generativelanguage.googleapis.com`)**:
+    *   This often indicates that the frontend is serving an outdated version of `services/geminiService.ts` where the API call structure was incorrect.
+    *   **Solution:** Stop your Vite development server (`npm run dev`) and restart it. This usually clears any caching issues.
+
+*   **Python Hook: `FileNotFoundError: [Errno 2] No such file or directory: ... main_hook.py`**:
+    *   This means you are trying to run `python3 main_hook.py` (or similar) from a directory other than `native_hook/`.
+    *   **Solution:** Ensure you `cd native_hook` before running the script.
+
+*   **Python Hook: Dependency or Version Issues (e.g., `ImportError`, `No matching distribution found`)**:
+    *   These often relate to the Python version or missing/incorrectly installed dependencies for `pyobjc` or other packages in `native_hook/requirements.txt`.
+    *   **Solution:**
+        1.  Ensure you are using Python 3.9+ (3.11.9 recommended). Use `pyenv` to manage Python versions if needed.
+        2.  From the `native_hook` directory, ensure you have installed dependencies with `pip install -r requirements.txt` using the pip associated with your target Python version.
+        3.  If you recently changed Python versions (e.g., with `pyenv local`), you might need to re-create your virtual environment (if using one) and/or re-install dependencies.
+
+*   **Frontend and Backend Not Communicating**:
+    *   Ensure both the Vite development server (`npm run dev` in the project root) AND the Python hook server (`python3 main_hook.py` in `native_hook/`) are running without errors.
+    *   Check browser console logs and the terminal output of `main_hook.py` for any specific error messages.
 
 ## Important Considerations
 
