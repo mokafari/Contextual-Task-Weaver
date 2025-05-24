@@ -1,5 +1,7 @@
 # Contextual Task Weaver (ETMS Core)
 
+![Contextual Task Weaver UI Screenshot](./ui.png)
+
 **Version:** 1.0 (Post-Merge)
 
 ## Overview
