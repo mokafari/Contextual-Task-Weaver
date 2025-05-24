@@ -197,3 +197,8 @@ export interface KeystrokePayload {
   delayBetweenCharsMs?: number; // Optional: for more human-like typing
   pressEnter?: boolean; // Added: to simulate pressing Enter after typing
 }
+
+export interface FocusedInputTextPayload {
+  focusedText: string | null;
+  errorMessage?: string; // Optional error message if retrieval failed
+}

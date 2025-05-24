@@ -9,7 +9,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { PlanProjectModal } from './components/PlanProjectModal';
 import { ContextualSuggestionsDisplay } from './components/ContextualSuggestionsDisplay';
 import { NudgeModal } from './components/NudgeModal';
-import type { TaskItem, CognitiveParserOutput, AppSettings, TaskStatus, ExternalLLMConfig, CaptureMode, UserEdit, DynamicContextMemory, PotentialMainTask, UserNudgeInput, ExportDataV1, DynamicContextItem, MacOSActiveApplicationInfo, ScreenCaptureResponsePayload, KeystrokePayload } from './types';
+import type { TaskItem, CognitiveParserOutput, AppSettings, TaskStatus, ExternalLLMConfig, CaptureMode, UserEdit, DynamicContextMemory, PotentialMainTask, UserNudgeInput, ExportDataV1, DynamicContextItem, MacOSActiveApplicationInfo, ScreenCaptureResponsePayload, KeystrokePayload, FocusedInputTextPayload } from './types';
 import { logger } from './services/logger';
 import { fetchHarmoniaDigitalisDocument } from './services/documentFetcher'; // Will fetch Apex Doctrine
 import * as dynamicContextManager from './services/dynamicContextManager';
@@ -82,6 +82,7 @@ const App: React.FC = () => {
   const [lastHookScreenshot, setLastHookScreenshot] = useState<string | null>(null);
   const [textToTypeViaHook, setTextToTypeViaHook] = useState<string>("Hello from CTW via Hook!");
   const [pressEnterAfterTyping, setPressEnterAfterTyping] = useState<boolean>(false);
+  const [focusedMacosInputText, setFocusedMacosInputText] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -189,6 +190,27 @@ const App: React.FC = () => {
           logger.error(APP_COMPONENT_NAME, "nativeHookEffect", "Keystroke simulation failed:", errorMsg);
           setStatusMessage(`${statusPart} | Hook: Keystroke error (${errorMsg.substring(0,30)}...)`);
           setError(`Hook Keystroke Error: ${errorMsg}`);
+        }
+      } else if (message.type === 'focused_input_text_response') {
+        if (message.status === 'success' && message.payload) {
+          const payload = message.payload as FocusedInputTextPayload;
+          setFocusedMacosInputText(payload.focusedText);
+          if (payload.focusedText === null && payload.errorMessage) {
+            logger.info(APP_COMPONENT_NAME, "nativeHookEffect", `Focused text is null: ${payload.errorMessage}`);
+            setStatusMessage((prev: string) => `${prev.split(' | Hook:')[0]} | Hook: No focused text (${payload.errorMessage ? payload.errorMessage.substring(0,30) : 'Unknown error'}...)`);
+          } else if (payload.focusedText !== null) {
+            logger.info(APP_COMPONENT_NAME, "nativeHookEffect", "Received focused input text:", payload.focusedText.substring(0, 50));
+            setStatusMessage((prev: string) => `${prev.split(' | Hook:')[0]} | Hook: Focused text retrieved`);
+          } else {
+             logger.info(APP_COMPONENT_NAME, "nativeHookEffect", "Received focused input text: null (no error specified)");
+             setStatusMessage((prev: string) => `${prev.split(' | Hook:')[0]} | Hook: No focused text`);
+          }
+        } else {
+          setFocusedMacosInputText(null);
+          const errorMsg = message.error_message || "Error receiving focused input text or payload empty";
+          logger.error(APP_COMPONENT_NAME, "nativeHookEffect", errorMsg);
+          setStatusMessage((prev: string) => `${prev.split(' | Hook:')[0]} | Hook: Error getting focused text`);
+          setError(`Hook Focused Text Error: ${errorMsg}`);
         }
       }
       // Handle other specific message types here if needed
@@ -827,6 +849,30 @@ const App: React.FC = () => {
     }
   };
 
+  const handleGetFocusedInputText = async () => {
+    if (nativeHookStatus !== 'connected') {
+      logger.warn(APP_COMPONENT_NAME, "handleGetFocusedInputText", "Native Hook not connected.");
+      setStatusMessage("Native Hook not connected. Cannot get focused input text.");
+      return;
+    }
+    try {
+      setFocusedMacosInputText("(Fetching...)"); // Optimistic UI update
+      setStatusMessage("Requesting focused input text from Native Hook...");
+      const response = await nativeHookService.sendMessage("get_focused_input_text");
+      if (response) {
+        logger.info(APP_COMPONENT_NAME, "handleGetFocusedInputText", "get_focused_input_text command sent.");
+      } else {
+        logger.warn(APP_COMPONENT_NAME, "handleGetFocusedInputText", "get_focused_input_text command timed out.");
+        setStatusMessage((prev: string) => `${prev.split(' | Hook:')[0]} | Hook: Focused text request timed out`);
+        setFocusedMacosInputText("(Request timed out)");
+      }
+    } catch (error: any) {
+      logger.error(APP_COMPONENT_NAME, "handleGetFocusedInputText", "Error sending get_focused_input_text command:", error);
+      setStatusMessage(`Error requesting focused text: ${error.message.substring(0,50)}`);
+      setFocusedMacosInputText("(Error sending request)");
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-700 text-gray-100 flex flex-col items-center p-2 sm:p-4 md:p-6 selection:bg-sky-400 selection:text-sky-900">
       <div className="w-full max-w-screen-2xl bg-slate-800 shadow-2xl rounded-xl p-3 sm:p-5 md:p-8">
@@ -922,6 +968,12 @@ const App: React.FC = () => {
                     <img src={lastHookScreenshot} alt="Screen capture from Hook" className="max-w-full h-auto rounded-md border border-slate-700 mt-1" />
                   </div>
                 )}
+                {focusedMacosInputText !== null && (
+                  <div className="mt-2 pt-2 border-t border-sky-600/50">
+                    <p className="font-semibold">Focused macOS Input Text:</p>
+                    <p className="text-sky-200 whitespace-pre-wrap break-all">{focusedMacosInputText || "(empty or not applicable)"}</p>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -977,9 +1029,6 @@ const App: React.FC = () => {
          {!apexDoctrineContent && <p className="text-red-400 text-xs mt-0.5">Warning: Foundational AI Agent Apex Doctrine failed to load. AI operations may not be fully guided.</p>}
       </footer>
 
-      {/* Diagnostic log for nativeHookStatus before rendering test buttons */}
-      {console.log(APP_COMPONENT_NAME, "Render-Time nativeHookStatus Check:", nativeHookStatus)}
-
       {/* Temporary Button for testing */}
       {nativeHookStatus === 'connected' && (
         <div className="flex space-x-2 mt-2 flex-wrap justify-center items-center">
@@ -1021,6 +1070,12 @@ const App: React.FC = () => {
               <span>Send (Enter)</span>
             </label>
           </div>
+          <button 
+            onClick={handleGetFocusedInputText}
+            className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 rounded-md text-white transition-colors mb-2 ml-2"
+          >
+            Get Focused Input Text (Hook)
+          </button>
         </div>
       )}
     </div>

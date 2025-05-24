@@ -12,66 +12,103 @@ import uuid
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Attempt to import AppKit for macOS specific features
+MACOS_FEATURES_ENABLED = False
+APPKIT_LOADED = False
+AX_FEATURES_ENABLED = False
+
 try:
     import AppKit
-    NSWorkspace = AppKit.NSWorkspace
-    NSRunningApplication = AppKit.NSRunningApplication
-    MACOS_FEATURES_ENABLED = True
-    logger.info("AppKit loaded successfully. macOS-specific features enabled.")
-except ImportError:
-    logger.warning("AppKit not found. macOS-specific features (like active app info) will be disabled.")
+    from AppKit import NSWorkspace, NSRunningApplication
+    import Foundation
+    APPKIT_LOADED = True
+    logger.info("AppKit and Foundation loaded successfully.")
+
+    # Check for Accessibility functions specifically
+    if hasattr(AppKit, 'AXUIElementCreateSystemWide'):
+        AX_FEATURES_ENABLED = True
+        logger.info("AXUIElementCreateSystemWide found. macOS Accessibility features enabled.")
+    else:
+        logger.warning("AXUIElementCreateSystemWide NOT found via AppKit. Advanced Accessibility features may fail.")
+    MACOS_FEATURES_ENABLED = True # If AppKit loaded, basic macOS features are enabled
+
+except ImportError as e:
+    logger.warning(f"Critical macOS frameworks (AppKit, Foundation) not found: {e}. All macOS-specific features will be disabled.")
     MACOS_FEATURES_ENABLED = False
+    APPKIT_LOADED = False
+    AX_FEATURES_ENABLED = False
+
 
 # Store connected clients
 connected_clients = set()
 
+# Helper functions for creating standardized responses
+def create_response(message_id, original_command, received_payload, status, payload_data):
+    return {
+        "id": message_id,
+        "type": f"{original_command}_response", 
+        "original_command": original_command,
+        "status": status,
+        "received_payload": received_payload,
+        "payload": payload_data
+    }
+
+def create_error_response(message_id, original_command, received_payload, error_message):
+    return {
+        "id": message_id,
+        "type": f"{original_command}_response", 
+        "original_command": original_command,
+        "status": "error",
+        "received_payload": received_payload,
+        "error_message": error_message
+    }
+
+
 def get_macos_active_window_info():
     """Gets information about the frontmost application and its main window on macOS."""
-    if not MACOS_FEATURES_ENABLED:
+    if not APPKIT_LOADED: # Relies on AppKit
         return {
             "application_name": "N/A (macOS AppKit not available)",
             "window_title": "N/A",
-            "bundle_id": "N/A"
+            "bundle_id": "N/A",
+            "pid": -1
         }
     
-    workspace = NSWorkspace.sharedWorkspace()
-    active_app = workspace.frontmostApplication()
-    
-    if active_app:
-        app_name = active_app.localizedName()
-        bundle_id = active_app.bundleIdentifier()
-        pid = active_app.processIdentifier()
+    # Default values in case of an error or if info cannot be obtained
+    app_name = "Unknown"
+    window_title = "Unknown"
+    bundle_id = "Unknown"
+    pid = -1
 
-        # Getting window title is more complex as it requires accessibility or other methods
-        # For simplicity, this is a placeholder. A more robust solution would involve AX APIs.
-        # This example uses NSRunningApplication to get the main window if available and often works.
-        running_app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
-        window_title = "(Could not determine main window title)" # Default
-
-        # The following is a common way but might not always get the *main* window title directly or easily.
-        # It often relies on the app having a typical window structure and might require Accessibility API for complex apps.
-        # For now, we'll keep it simpler and acknowledge this limitation.
-        # A more direct way for *some* apps if they are scriptable is via AppleScript.
+    try:
+        workspace = NSWorkspace.sharedWorkspace()
+        active_app = workspace.frontmostApplication()
         
-        # Attempting a common, but not always perfect, way to get a window title for the active app.
-        # This part can be significantly improved with Accessibility APIs for more reliability.
-        # For now, if `mainWindow` is available on `running_app` and has a `title`.
-        if hasattr(running_app, 'mainWindow') and running_app.mainWindow() and hasattr(running_app.mainWindow(), 'title'):
-             window_title = running_app.mainWindow().title() or "(No title for main window)"
-        elif hasattr(active_app, 'mainWindow') and active_app.mainWindow() and hasattr(active_app.mainWindow(), 'title'): # Fallback to active_app if running_app didn't yield it
-            window_title = active_app.mainWindow().title() or "(No title for main window)"
+        if active_app:
+            app_name = active_app.localizedName() or "(Unnamed Application)"
+            bundle_id = active_app.bundleIdentifier() or "(No Bundle ID)"
+            pid = active_app.processIdentifier()
+            window_title = "(Could not determine main window title)" 
 
-        return {
-            "application_name": app_name,
-            "window_title": window_title,
-            "bundle_id": bundle_id,
-            "pid": pid
-        }
+            running_app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+            if running_app: # Check if running_app is not None
+                if hasattr(running_app, 'mainWindow') and running_app.mainWindow() and hasattr(running_app.mainWindow(), 'title'):
+                    window_title = running_app.mainWindow().title() or "(No title for main window)"
+                # Fallback to active_app.mainWindow() if running_app.mainWindow() didn't yield title or was None
+                elif hasattr(active_app, 'mainWindow') and active_app.mainWindow() and hasattr(active_app.mainWindow(), 'title'): 
+                    window_title = active_app.mainWindow().title() or "(No title for main window)"
+            elif hasattr(active_app, 'mainWindow') and active_app.mainWindow() and hasattr(active_app.mainWindow(), 'title'):
+                # If running_app itself was None, try direct from active_app as a last resort
+                window_title = active_app.mainWindow().title() or "(No title for main window)"
+
+    except Exception as e:
+        logger.error(f"Error getting macOS active window info: {e}", exc_info=True)
+        # Values will remain as the initialized defaults: "Unknown", -1 etc.
+        
     return {
-        "application_name": "Unknown",
-        "window_title": "Unknown",
-        "bundle_id": "Unknown"
+        "application_name": app_name,
+        "window_title": window_title,
+        "bundle_id": bundle_id,
+        "pid": pid
     }
 
 def capture_screen_to_base64(capture_type="fullscreen", output_dir=None):
@@ -79,42 +116,28 @@ def capture_screen_to_base64(capture_type="fullscreen", output_dir=None):
     if output_dir is None:
         output_dir = tempfile.gettempdir()
     
-    # Ensure the output directory exists
     os.makedirs(output_dir, exist_ok=True)
-    
     temp_file_path = os.path.join(output_dir, f"ctw_capture_{uuid.uuid4().hex}.png")
-    
-    # Default to fullscreen capture. More options can be added via capture_type or payload.
-    # -x: do not play sounds
-    # -C: capture the cursor
-    # -T 0: no delay (can be parameterized)
-    # Using PNG format. JPEGs are smaller but PNG is lossless for UI.
     command_args = ["screencapture", "-x", "-C", "-T", "0", "-t", "png", temp_file_path]
-
-    # Example: To capture a specific window, one might use -l<windowID>
-    # Example: To capture interactively, one might use -i
-    # These would require more complex payload handling from the client.
 
     try:
         logger.info(f"Executing screen capture: {' '.join(command_args)}")
-        # Increased timeout for screen capture, just in case.
         result = subprocess.run(command_args, capture_output=True, text=True, check=True, timeout=10)
-        logger.info(f"Screen capture successful. Output: {result.stdout}, Error: {result.stderr}")
+        # No need to log stdout/stderr on success, check=True handles non-zero exit
+        logger.info(f"Screen capture command executed successfully for {temp_file_path}")
 
         if os.path.exists(temp_file_path):
             with open(temp_file_path, "rb") as image_file:
                 encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-            # Clean up the temporary file
             try:
                 os.remove(temp_file_path)
                 logger.info(f"Temporary capture file {temp_file_path} removed.")
             except OSError as e:
                 logger.warning(f"Could not remove temporary capture file {temp_file_path}: {e}")
-            return encoded_string, None  # data, error_message
+            return encoded_string, None
         else:
             logger.error(f"Screen capture command executed but output file {temp_file_path} not found.")
             return None, f"Output file not found after capture: {temp_file_path}"
-
     except subprocess.CalledProcessError as e:
         logger.error(f"Screen capture failed. Return code: {e.returncode}, Output: {e.output}, Stderr: {e.stderr}")
         return None, f"Screen capture command failed: {e.stderr or e.output or 'Unknown error'}"
@@ -125,7 +148,6 @@ def capture_screen_to_base64(capture_type="fullscreen", output_dir=None):
         logger.error(f"An unexpected error occurred during screen capture: {e}", exc_info=True)
         return None, f"Unexpected error during screen capture: {str(e)}"
     finally:
-        # Ensure temp file is removed if it exists and something went wrong before removal
         if os.path.exists(temp_file_path):
             try:
                 os.remove(temp_file_path)
@@ -136,154 +158,194 @@ def capture_screen_to_base64(capture_type="fullscreen", output_dir=None):
 def simulate_keystrokes_applescript(text_to_type: str, press_enter: bool = False):
     """Simulates keystrokes using AppleScript, optionally pressing Enter."""
     try:
-        # Sanitize the text for AppleScript string literals
-        sanitized_text = text_to_type.replace("\\\\", "\\\\\\\\").replace("\"", "\\\"")
-        
+        sanitized_text = text_to_type.replace("\\", "\\\\").replace(""", "\"")
         applescript_command = f'tell application "System Events" to keystroke "{sanitized_text}"'
         if press_enter:
-            applescript_command += '\\nkeystroke return' # Using \\n to ensure it's a new line in the tell block for clarity, then keystroke return
+            applescript_command += '\nkeystroke return'
 
         logger.info(f"Executing AppleScript for keystrokes: osascript -e '{applescript_command[:100]}...'")
-        
         result = subprocess.run(["osascript", "-e", applescript_command], capture_output=True, text=True, check=False)
         
         if result.returncode == 0:
             logger.info("Keystroke simulation successful.")
             return True, None
         else:
-            error_message = f"AppleScript keystroke command failed: {result.stderr.strip()}"
-            logger.error(f"Keystroke simulation failed. Return code: {result.returncode}, Error: {result.stderr.strip()}")
+            error_message = f"AppleScript keystroke command failed with code {result.returncode}: {result.stderr.strip()}"
+            logger.error(error_message)
             return False, error_message
     except Exception as e:
-        logger.error(f"Exception during keystroke simulation: {e}")
+        logger.error(f"Exception during keystroke simulation: {e}", exc_info=True)
         return False, str(e)
+
+def get_focused_input_text():
+    """Attempts to get text from the currently focused UI element using Accessibility."""
+    if not AX_FEATURES_ENABLED:
+        return None, "macOS Accessibility features are disabled or AXUIElementCreateSystemWide is not available."
+
+    try:
+        system_element = AppKit.AXUIElementCreateSystemWide()
+        focused_element_ref = system_element.attributeValue_("AXFocusedUIElement")
+
+        if focused_element_ref is None:
+            logger.info("No focused UI element found.")
+            return None, "No focused UI element."
+        
+        focused_element = focused_element_ref
+
+        if focused_element.attributeIsSettable_("AXValue") or focused_element.attributeNames().containsObject_("AXValue"):
+            value = focused_element.attributeValue_("AXValue")
+            if value is not None:
+                logger.debug(f"Focused element raw value type: {type(value)}, value: {str(value)[:100]}")
+                if isinstance(value, str):
+                    return str(value), None
+                elif APPKIT_LOADED and isinstance(value, AppKit.NSAttributedString):
+                    return str(value.string()), None 
+                elif APPKIT_LOADED and isinstance(value, Foundation.NSObject) and hasattr(value, 'description'):
+                    return str(value.description()), None
+                else:
+                    logger.info(f"Focused element value is not a direct string or common NSObject derivative: {type(value)}")
+                    return None, f"Focused element value type not directly string: {type(value)}"
+            else:
+                logger.info("Focused element has AXValue attribute, but current value is None.")
+                return None, "Focused element has AXValue, but it is None."
+        else:
+            logger.info("Focused element does not have an AXValue attribute.")
+            return None, "Focused element does not have AXValue attribute."
+
+    except Exception as e:
+        logger.error(f"Error getting focused input text via Accessibility: {e}", exc_info=True)
+        is_ax_permission_error = False
+        if APPKIT_LOADED: # Check if AppKit is available to even attempt domain check
+            # Check for specific error types if AppKit and Foundation are loaded
+            # Note: AXErrorDomain is a constant for NSError domain, not a class itself.
+            if hasattr(AppKit, 'AXErrorDomainConstant'): # Check if we have a defined constant for the domain
+                 if isinstance(e, Foundation.NSError) and e.domain() == AppKit.AXErrorDomainConstant:
+                    is_ax_permission_error = True
+            elif isinstance(e, Foundation.NSError) and "AXErrorDomain" in e.domain(): # Fallback string check
+                 is_ax_permission_error = True
+
+        if is_ax_permission_error or "not allowed to send keystrokes" in str(e).lower() or "accessibility API is not allowed" in str(e).lower() or "accessibility API failed" in str(e).lower() or "AXAPIPermissionError" in str(e):
+            return None, "Accessibility API call failed. This may be a permissions issue. Ensure the app running this script has Accessibility access in System Settings."
+        return None, f"Exception accessing Accessibility API: {str(e)}"
 
 async def handle_message(websocket, message_str):
     """Handles incoming messages from the CTW web app."""
+    message_id = "unknown_id" # Default in case parsing fails early
+    command = None
+    received_payload = None
+
     try:
         message = json.loads(message_str)
-        logger.info(f"Received message: {message}")
+        # logger.info(f"Received message: {message}") # Can be verbose, use debug if needed
         
         command = message.get("command")
-        payload = message.get("payload")
-        message_id = message.get("id")
+        received_payload = message.get("payload")
+        message_id = message.get("id", "unknown_id_after_parse")
 
-        # Diagnostic print
-        logger.info(f"DIAGNOSTIC: Received command: {repr(command)}")
-        # We can remove or comment out the next diagnostic line if no longer needed
-        # logger.info(f"DIAGNOSTIC: Comparing with: {repr("get_active_application_info")}")
+        logger.info(f"Processing command: {repr(command)}, ID: {message_id}")
 
-        response = {
-            "type": "ack", # Default type, will be overridden by specific handlers
-            "original_command": command,
-            "status": "received", # Default status
-            "received_payload": payload,
-            "id": message_id 
-        }
+        response = None 
 
         if command == "ping":
-            response["type"] = "pong"
-            response["status"] = "success"
-            response["payload"] = "Hello from Python Hook!"
+            await websocket.send(json.dumps({
+                "id": message_id,
+                "type": "pong",
+                "original_command": command,
+                "status": "success",
+                "received_payload": received_payload,
+                "payload": "Hello from Python Hook!"
+            }))
+            logger.debug(f"Sent pong for ID: {message_id}")
+            return 
 
         elif command == "get_active_application_info":
-            if MACOS_FEATURES_ENABLED:
+            if APPKIT_LOADED:
                 app_info = get_macos_active_window_info()
-                response["type"] = "active_application_info_response"
-                response["status"] = "success"
-                response["payload"] = app_info
+                response = create_response(message_id, command, received_payload, "success", app_info)
             else:
-                response["type"] = "active_application_info_response"
-                response["status"] = "error"
-                response["error_message"] = "macOS features are disabled because AppKit could not be imported."
-                response["payload"] = get_macos_active_window_info() # Returns N/A info
+                response = create_error_response(message_id, command, received_payload, 
+                                                 "macOS features (AppKit) are disabled.")
+                response["payload"] = get_macos_active_window_info() # Contains N/A fields
 
         elif command == "trigger_screen_capture":
-            logger.info("Processing trigger_screen_capture command...")
             image_data, error_msg = capture_screen_to_base64()
             if image_data:
-                response["type"] = "screen_capture_response"
-                response["status"] = "success"
-                response["payload"] = {"imageData": image_data, "format": "png"}
-                logger.info("Screen capture successful, sending base64 image data.")
+                response = create_response(message_id, command, received_payload, "success", {"imageData": image_data, "format": "png"})
             else:
-                response["type"] = "screen_capture_response"
-                response["status"] = "error"
-                response["error_message"] = error_msg or "Failed to capture screen"
-                response["payload"] = None
-                logger.error(f"Screen capture failed: {error_msg}")
+                response = create_error_response(message_id, command, received_payload, error_msg or "Failed to capture screen")
 
         elif command == "simulate_keystrokes":
             text_to_type = None
             press_enter_flag = False
-            if isinstance(payload, dict):
-                text_to_type = payload.get("text")
-                press_enter_flag = payload.get("pressEnter", False)
-            elif isinstance(payload, str): # Legacy: direct string payload
-                text_to_type = payload
+            if isinstance(received_payload, dict):
+                text_to_type = received_payload.get("text")
+                press_enter_flag = received_payload.get("pressEnter", False)
+            elif isinstance(received_payload, str):
+                text_to_type = received_payload
             
             if text_to_type:
-                logger.info(f"Processing simulate_keystrokes command with text: '{text_to_type[:30]}...', pressEnter: {press_enter_flag}")
                 success, error_msg = simulate_keystrokes_applescript(text_to_type, press_enter_flag)
                 if success:
-                    response["type"] = "keystroke_simulation_response"
-                    response["status"] = "success"
-                    response["payload"] = {"message": "Keystrokes simulated."}
-                    logger.info("Keystroke simulation successful.")
+                    response = create_response(message_id, command, received_payload, "success", {"message": "Keystrokes simulated."})
                 else:
-                    response["type"] = "keystroke_simulation_response"
-                    response["status"] = "error"
-                    response["error_message"] = error_msg or "Failed to simulate keystrokes"
-                    logger.error(f"Keystroke simulation failed: {error_msg}")
+                    response = create_error_response(message_id, command, received_payload, error_msg or "Failed to simulate keystrokes")
             else:
-                response["type"] = "keystroke_simulation_response"
-                response["status"] = "error"
-                response["error_message"] = "Missing 'text' in payload for simulate_keystrokes"
-                logger.warning("Simulate_keystrokes command missing text in payload.")
+                response = create_error_response(message_id, command, received_payload, "Missing 'text' in payload for simulate_keystrokes")
 
-        # Add more command handlers here as we build features
+        elif command == "get_focused_input_text":
+            if not AX_FEATURES_ENABLED:
+                 response = create_error_response(message_id, command, received_payload, "macOS Accessibility features are not available.")
+            else:
+                text_value, error_msg = get_focused_input_text()
+                if error_msg:
+                    response = create_error_response(message_id, command, received_payload, error_msg)
+                else:
+                    response = create_response(message_id, command, received_payload, "success", {"focusedText": text_value})
+                    logger.debug(f"Successfully retrieved focused text (first 50 chars): '{str(text_value)[:50] if text_value else "None"}', ID: {message_id}")
         else:
-            response["type"] = "unknown_command_response"
-            response["status"] = "error"
-            response["error_message"] = f"Unknown command: {command}"
-            logger.warning(f"Unknown command received: {command}")
+            response = create_error_response(message_id, command, received_payload, f"Unknown command: {command}")
+            logger.warning(f"Unknown command received: {command}, ID: {message_id}")
 
-        await websocket.send(json.dumps(response))
-        logger.info(f"Sent response for command '{command}': {json.dumps(response)[:200]}...") # Log snippet
+        if response:
+            await websocket.send(json.dumps(response))
+            logger.debug(f"Sent response for command '{command}', ID: {message_id}, Snippet: {json.dumps(response)[:150]}...")
 
     except json.JSONDecodeError:
-        logger.error(f"Invalid JSON received: {message_str}")
-        await websocket.send(json.dumps({"type": "error", "message": "Invalid JSON format", "id": message_id if 'message_id' in locals() else None}))
+        logger.error(f"Invalid JSON received: {message_str}", exc_info=True) 
+        # message_id might not be available if JSON is malformed
+        await websocket.send(json.dumps({"type": "error", "message": "Invalid JSON format", "id": "json_decode_error"}))
     except Exception as e:
-        logger.error(f"Error processing message: {e}", exc_info=True)
-        await websocket.send(json.dumps({"type": "error", "message": f"Server error: {str(e)}", "id": message_id if 'message_id' in locals() else None}))
+        logger.error(f"Error processing message (ID: {message_id}, Command: {command}): {e}", exc_info=True)
+        await websocket.send(json.dumps({"type": "error", "message": f"Server error: {str(e)}", "id": message_id}))
 
 async def register(websocket):
     """Registers a new client connection."""
     connected_clients.add(websocket)
-    logger.info(f"Client connected: {websocket.remote_address}")
+    logger.info(f"Client connected: {websocket.remote_address} (Total: {len(connected_clients)})")
     try:
         async for message in websocket:
             await handle_message(websocket, message)
-    except websockets.exceptions.ConnectionClosedError:
-        logger.info(f"Client connection closed error: {websocket.remote_address}")
+    except websockets.exceptions.ConnectionClosedError as conn_closed_err:
+        logger.info(f"Client connection closed (expected): {websocket.remote_address} - {conn_closed_err}")
     except Exception as e:
-        logger.error(f"Error during client session: {e}", exc_info=True)
+        logger.error(f"Error during client session {websocket.remote_address}: {e}", exc_info=True)
     finally:
         await unregister(websocket)
 
 async def unregister(websocket):
     """Unregisters a client connection."""
-    connected_clients.remove(websocket)
-    logger.info(f"Client disconnected: {websocket.remote_address}")
+    if websocket in connected_clients:
+        connected_clients.remove(websocket)
+        logger.info(f"Client disconnected: {websocket.remote_address} (Total: {len(connected_clients)})")
+    # else: # No need to log if already removed, might happen with rapid connect/disconnect
+        # logger.debug(f"Attempted to unregister client {websocket.remote_address} but not found in connected_clients.")
 
 async def main():
     """Starts the WebSocket server."""
     host = "localhost"
     port = 8765
-    # global uuid # uuid is imported at the top level now
 
-    async with websockets.serve(register, host, port):
+    async with websockets.serve(register, host, port, ping_interval=20, ping_timeout=20):
         logger.info(f"Python Hook WebSocket server started on ws://{host}:{port}")
         await asyncio.Future()  # Run forever
 
@@ -291,7 +353,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Python Hook server shutting down.")
+        logger.info("Python Hook server shutting down gracefully.")
     except Exception as e:
         logger.critical(f"Python Hook server failed to start or crashed: {e}", exc_info=True)
 
