@@ -178,3 +178,22 @@ export interface ExportDataV1 {
   potentialMainTasks: PotentialMainTask[];
   aggregatedFeedback: Array<[string, AggregatedFeedbackPattern]>; // For Map serialization
 }
+
+// Types for Native Hook communication (v2.8+)
+export interface MacOSActiveApplicationInfo {
+  application_name: string;
+  window_title: string;
+  bundle_id: string;
+  pid?: number;
+}
+
+export interface ScreenCaptureResponsePayload {
+  imageData: string;
+  format: 'png' | 'jpeg'; // Or other supported formats
+}
+
+export interface KeystrokePayload {
+  text: string;
+  delayBetweenCharsMs?: number; // Optional: for more human-like typing
+  pressEnter?: boolean; // Added: to simulate pressing Enter after typing
+}

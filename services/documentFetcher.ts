@@ -2,7 +2,7 @@
 import { logger } from './logger';
 
 const COMPONENT_NAME = "DocumentFetcher";
-const HARMONIA_DIGITALIS_URL = "https://raw.githubusercontent.com/mokafari/Harmonia-Digitalis/main/Harmonia_Digitalis_v5.md";
+const HARMONIA_DIGITALIS_URL = "https://raw.githubusercontent.com/mokafari/Harmonia-Digitalis/refs/heads/main/Harmonia_Digitalis_v5.md";
 
 /**
  * Fetches the Harmonia Digitalis document.

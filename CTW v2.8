@@ -1,0 +1,170 @@
+# CTW v2.8: "Co-Captain" Implementation Plan (macOS Developer/Personal Use Focus)
+
+**Version:** 2.8
+**Date:** May 24, 2025
+**Target Platform:** macOS (Developer/Personal Use First)
+**Core Objective:** Transform CTW into an AI co-captain and intelligent abstraction layer for the user's macOS environment. This version prioritizes simplicity for rapid personal deployment, focusing on a lightweight native macOS hook for deep system interaction, enhanced contextual understanding, and initial computer control capabilities, including automated prompt enhancement.
+
+**Guiding Principles for This Version:**
+* **Developer-Centric Simplicity:** Initial implementation of safety and UI features will be streamlined, assuming a technically proficient solo user (you) who understands the system's capabilities and accepts the associated risks for enhanced power and flexibility.
+* **macOS Native Integration:** Leverage macOS-specific features (Accessibility, AppleScript, shell commands, `fsevents`) for the Native Hook to ensure efficient and deep integration.
+* **CTW as an Abstraction Layer:** The Native Hook provides low-level sensing/acting primitives. The CTW web app provides the high-level intelligence and user interface, making complex computer interactions simple and automatable.
+* **Iterative Power & Future Hardening Path:** Get core functionalities working robustly for your personal use first. More elaborate safeguards and user-facing polish for wider distribution can be deferred, but the path to them should be considered.
+
+---
+## Part 1: Foundational Enhancements (v2.8 Core Infrastructure for macOS Developer)
+
+### 1.1. Native Helper Application (The macOS "Hook")
+    * **Rationale:** To enable the CTW web application (context engine) to deeply understand and interact with the user's broader macOS desktop environment beyond the browser sandbox. This hook will be a lightweight, bi-directional interface.
+    * **Technology Choice (macOS specific):** Consider Swift/Objective-C for core functions requiring deep OS integration (e.g., for optimal `CGEventPost` usage or complex Accessibility interactions). Alternatively, a robust scripting approach (e.g., Python with `pyobjc` and other macOS-specific libraries, or advanced AppleScript) managed by a minimal native Swift/Obj-C wrapper or a Rust-based core for performance and safety. Communication with the web app via a local WebSocket server (for bi-directional ease) or macOS Native Messaging.
+    * **Tasks (Simplified for Initial Personal Use):**
+        1.  **Secure IPC Bridge:** Establish robust, secure local communication between the CTW web app and the Native Hook.
+        2.  **Screen Capture Module:** Utilize macOS native screen capture (e.g., `screencapture` CLI, AVFoundation) for full screen or selected window capture, as directed by the web app.
+        3.  **Enhanced UI & System Information Module (macOS):**
+            * Reliably get frontmost application name (e.g., `NSWorkspace.shared.frontmostApplication`), bundle ID, and active window title.
+            * **Targeted Input Field Reading:** Implement capability to read current text content from a focused input field using macOS Accessibility APIs (e.g., `AXUIElementCopyAttributeValue` for `kAXValueAttribute`). This is crucial for capturing draft prompts.
+            * **Basic UI Element Info (Leveraging macOS Accessibility):** For specific, user-identified target applications (e.g., Cursor AI, primary chat app), use Accessibility APIs to get properties of key UI elements (role, title, value, position) to aid interaction. Developer can initially map these for key apps.
+        4.  **File System Event Monitoring (macOS `fsevents` - Targeted):**
+            * Monitor user-defined specific directories (e.g., projects folder, Downloads) using `fsevents` for file open/save events.
+            * Relay metadata (path, type, timestamp) of recently active relevant files to the web app.
+        5.  **Keyboard Simulation (macOS):** Implement reliable text typing and key presses (including modifiers) into the focused application using `CGEventPost` or AppleScript (`tell application "System Events" to keystroke...`).
+        6.  **Mouse Simulation (macOS):** Implement cursor movement and click events (left, right, double) using `CGEventPost` or AppleScript.
+        7.  **Terminal Interaction Module (macOS - Developer Discretion):**
+            * **Direct Shell Execution:** Allow CTW (via Hook) to execute shell commands in the user's default macOS shell (e.g., `zsh`, `bash`) using `Process` in Swift/Obj-C or `subprocess` in Python.
+            * **AppleScript for Terminal App Control:** For interactions with Terminal.app itself (new tabs, naming), use AppleScript.
+            * **Security Note for Personal Use:** Developer is responsible for vetting commands. No complex sandboxing in this initial version beyond developer's own caution. Output relayed to CTW.
+        8.  **Local Context History Cache (Short-Term, Hook-Side):**
+            * Maintain a small, in-memory, time-limited cache (e.g., last 5 active app names/window titles, last 5 files used from monitored folders, last few terminal commands run via CTW).
+        9.  **Permissions (macOS Developer Setup - Manual Granting):**
+            * Developer manually grants permissions in System Settings > Privacy & Security (Screen Recording, Accessibility, Full Disk Access for monitored dirs, Automation for Terminal/Finder). CTW Settings provides a checklist.
+
+### 1.2. CTW Web App Enhancements for Orchestration
+    * **Rationale:** The web app remains the "brain," processing rich macOS context and orchestrating Hook actions.
+    * **Tasks:**
+        1.  **Integrate IPC Bridge Client:** For bi-directional communication with the Native Hook.
+        2.  **Augment Contextual Engine:**
+            * Process macOS-specific data (AppleScript results, `fsevents` data, UI element info, focused input field content).
+            * Develop heuristics to identify "AI Prompting Context" (active app, window elements, user-defined zones).
+        3.  **Prompt Enhancement Engine (New Module using Gemini):**
+            * **Input:** User's draft prompt text (from Hook), current CTW context (EKS, recent activity, locked keywords).
+            * **Processing:** Analyze draft for intent, clarity. Apply prompt engineering principles (add role, specify format, use context). "Unpack" terse phrases.
+            * **Output:** Enhanced prompt.
+        4.  **Develop Action Sequencer:** Translate high-level intentions (e.g., "Enhance prompt and type it back," "Restart Cursor AI") into sequences of Hook commands.
+        5.  **User Intent Parser:** For understanding control-oriented commands.
+
+### 1.3. UI Overhaul: "The Symbiotic Hub" (Lean Implementation)
+    * **Rationale:** Essential for transparency and control, even for a solo developer, given the new capabilities.
+    * **Tasks:**
+        1.  **Implement Collapsible "AI Hub" Sidebar:** As per prior UI ideation (Option B).
+        2.  **Core Hub Components:**
+            * **FlowState Header (within Hub):** Activity Hue, Inferred Context Tags (from macOS context).
+            * **AI Status & Activity Log:** Log of CTW/Hook observations and actions.
+            * **Suggestions Tab:** For AI suggestions, especially those leading to computer control. Options: [Execute], [Preview], [Edit], [Dismiss], [Why this?].
+            * **"Unpacked Insights" Tab:** For Concept Unpacking results.
+            * **"Compose & Control" Tab:** For explicit computer control instructions (typing, app actions).
+            * **Prompt Enhancement Settings:** Toggle feature, select style (autocomplete, replace, chip).
+        3.  **Simplified Styling:** Prioritize functionality and clarity over extensive aesthetic polish for this personal version.
+
+### 1.4. Evolving Knowledge Store (EKS) v1.5: "Locked Keywords" Feature
+    * **Rationale:** Allow persistent, high-priority contextual guidance for the AI.
+    * **Tasks:**
+        1.  **EKS Schema Update:** Store user-defined "locked keywords" (phrase, meaning, context).
+        2.  **UI for Managing Locked Keywords:** In CTW Settings -> "AI & EKS" section.
+        3.  **Context Engine Integration:** Prioritize locked keywords in context interpretation and prompt enhancement.
+
+---
+## Part 2: Computer Use Capabilities - Phase 1 (v2.8 Features on macOS)
+
+### 2.1. Feature: Typing in Any Chatbox (macOS)
+    * **Rationale:** A core "4 hands on deck" feature for communication assistance.
+    * **Tasks:**
+        1.  **UI in Hub ("Compose Message"):** Input for user's goal or direct text. AI drafts/refines.
+        2.  **Targeting:** Initially, rely on the user having the target chat application window *and input field focused*. CTW instructs Hook to type into the OS-level focused input field.
+        3.  **Simplified Confirmation (Developer-centric):** Brief overlay from Hook (e.g., "CTW will type: '...' [Go / Cancel]") or a "trusted mode" toggle for less frequent confirmations after user comfort is established.
+        4.  **Execution:** Hook uses Keyboard Simulation. User may initially need to press "send" manually in some chat apps if automating that click is complex per-app for v2.8.
+
+### 2.2. Feature: Automated Prompt Enhancement & Unpacking
+    * **Rationale:** Improve quality and efficiency of prompting other AI agents by leveraging CTW's context and LLM.
+    * **Tasks:**
+        1.  **Detection of AI Prompting Activity:** Web app analyzes context from Hook (active app like Cursor/ChatGPT web, UI elements near focused field) or user-defined "AI Prompt Zones."
+        2.  **Draft Prompt Capture:** Hook reads text from the focused input field (on pause, hotkey, or periodically) and sends to web app.
+        3.  **Prompt Enhancement & Delivery (User Selectable Style):**
+            * **A) Autocomplete Style:** Inline suggestions from Hook as user types.
+            * **B) Replace on Trigger:** Hook replaces draft with enhanced prompt on user pause/hotkey.
+            * **C) Suggestion Chip:** Hook shows "✨ Enhance Prompt?" chip near field; user clicks to activate.
+        4.  **UI for Confirmation & Undo:** Clear visual cue of enhancement. Always provide an immediate and easy "Undo" (e.g., Hook offers "Undo Enhancement" chip, or rely on native Cmd+Z if replacement is a single OS event).
+        5.  **Settings for Feature Control:** In Hub, allow enable/disable, choice of interaction style.
+
+### 2.3. Feature: Restarting "Cursor AI" Coding Agent Windows (macOS)
+    * **Rationale:** Specific, high-value automation for developers using AI coding agents.
+    * **Tasks:**
+        1.  **Detection (macOS):** Use active application name (`Cursor.app`), bundle ID, and/or window title patterns.
+        2.  **Restart Sequence (macOS - choose best for Cursor):**
+            * **Graceful Quit & Reopen:** Hook uses AppleScript (`tell application "Cursor" to quit`) then shell command (`open -a "Cursor"`).
+            * **Internal Reload Command:** If Cursor AI has a "Reload Window," "Clear Session," or similar command accessible via menu/hotkey, CTW instructs Hook to trigger that using Keyboard/Mouse Simulation or AppleScript. This is preferred.
+        3.  **UI Trigger & Confirmation:** Button in Hub's "Compose & Control" tab when Cursor context is detected. Simple confirmation modal: "Restart active Cursor AI window?"
+
+### 2.4. Methodology: Interacting with Other AIs (e.g., Cursor AI) via macOS Tools
+    * **Rationale:** Enable CTW to "talk" to other AI tools like a human, using its computer control capabilities.
+    * **Tasks (as a methodology to be applied):**
+        1.  **UI Element Interaction (macOS Accessibility & AppleScript):**
+            * For interacting with known UIs like Cursor AI: Use AppleScript to target scriptable UI elements (text areas, buttons).
+            * If not scriptable, use macOS Accessibility APIs (via Hook) to identify coordinates/properties of prompt fields/buttons for Keyboard/Mouse Simulation. Start with elements critical for prompt input/output.
+        2.  **Application in v2.8:** Crucial for "Automated Prompt Enhancement" (reading from/writing to prompt fields) and "Restart Cursor AI" (if clicking internal buttons).
+
+---
+## Part 3: Safety, Security & Control (Developer-Centric for v2.8 on macOS)
+
+### 3.1. Permissions & System Access (macOS Developer Setup)
+    * User (Developer) manually grants necessary permissions in System Settings > Privacy & Security (Screen Recording, Accessibility, Full Disk Access for monitored dirs, Automation).
+    * CTW Settings will include a checklist of required/recommended permissions for the Hook to function.
+
+### 3.2. Universal Stop ("Panic Button") - CRITICAL
+    * **Native Hook:** Implement a global keyboard shortcut (e.g., `Cmd+Option+Shift+Escape`) that the Hook constantly listens for to immediately halt all its current keyboard/mouse/terminal actions and notify the CTW web app.
+    * **CTW Web App:** Prominent, always accessible "STOP ALL AI ACTIONS" button in the AI Hub.
+
+### 3.3. Action Confirmations & Previews (Simplified for Developer)
+    * **Initial Implementation:** Use simple browser `confirm()` dialogs or basic modals for actions initiated from the web UI that will trigger Hook control actions.
+    * For Hook-initiated UI (like the "Enhance Prompt?" chip or typing confirmation), keep them brief and focused.
+    * **"Developer Mode" Toggle (in Settings):** Allows reducing confirmation frequency for common, trusted actions once you (the developer) are confident. *This mode implies acceptance of higher risk.*
+    * **Critical Undo:** Always provide an easy "Undo" for text replacements made by "Prompt Enhancement."
+
+### 3.4. Local Logging & Developer Responsibility
+    * The Native Hook and CTW Web App should log significant control actions, decisions, and errors locally for your review and debugging (e.g., to a local text file or browser console).
+    * As the developer and sole initial user, you acknowledge responsibility for the actions taken by CTW under your supervision and with the permissions you've granted.
+
+---
+## Part 4: Development & Deployment Strategy (For Personal macOS Use)
+
+### 4.1. Iterative Development Focus
+    * Prioritize Hook core functionalities for macOS first (IPC, Screen, Keyboard, Mouse).
+    * Then integrate with the Web App's context engine.
+    * Implement v2.8 features one by one, starting with those providing highest personal value (e.g., Prompt Enhancement, then Typing, then Cursor Restart).
+    * Test frequently on your macOS setup with your target applications.
+
+### 4.2. Technology Stack Notes (macOS Focus)
+    * **Web App:** React, TypeScript, Google Gemini API.
+    * **Native Hook (macOS):**
+        * Core Logic: Swift/Objective-C for robust OS interaction (Accessibility, CGEventPost, FSEvents).
+        * IPC: Local WebSocket server implemented in the Hook.
+        * Scripting: Leverage AppleScript and shell commands (via `Process` in Swift/Obj-C) where efficient.
+    * **State Management:** Ensure clear state management between web app and Hook regarding ongoing actions.
+
+### 4.3. GitHub for Personal Project Management
+    * Continue using GitHub for code, version control, issue tracking, and personal development notes.
+
+### 4.4. Future Hardening Path
+    * For each feature simplified for personal use (especially permissions, error handling for edge cases, confirmations, security sandboxing for terminal, generic UI element detection):
+        * Add `TODO [Future Hardening for Public Release]:` comments in the code.
+        * Maintain a separate document or project backlog section outlining specific enhancements needed before any wider distribution (e.g., formal permission onboarding UI, more robust error handling for diverse user setups, stricter sandboxing, internationalization for UI elements).
+    * This keeps the path to a more public/robust version in mind without over-complicating the initial v2.8 build for your personal use.
+
+---
+## Appendix: Notes for the Implementing Coding AI
+
+* This plan outlines features and tasks for CTW v2.8. The primary goal is robust functionality for a macOS developer's personal use, emphasizing simplicity and CTW as an intelligent abstraction layer.
+* Iterative development is key. Prioritize core mechanics over extensive UI polish or complex error handling for non-critical paths in this initial version.
+* Adhere strictly to the safety mechanisms outlined, especially the Universal Stop ("Panic Button") and the principle of user (developer) confirmation for control actions (even if simplified).
+* The interaction between the CTW Web App (context & AI logic) and the Native macOS Hook (sensing & acting via secure IPC) is central to this architecture.
+* When implementing computer control features, leverage macOS-specific tools (AppleScript, Accessibility APIs, `fsevents`, shell commands via `Process`) for efficiency and reliability on the target platform.
+* Focus on making CTW a powerful and responsive "co-captain" for its developer first.

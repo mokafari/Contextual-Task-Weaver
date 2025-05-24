@@ -9,10 +9,11 @@ import { SettingsModal } from './components/SettingsModal';
 import { PlanProjectModal } from './components/PlanProjectModal';
 import { ContextualSuggestionsDisplay } from './components/ContextualSuggestionsDisplay';
 import { NudgeModal } from './components/NudgeModal';
-import type { TaskItem, CognitiveParserOutput, AppSettings, TaskStatus, ExternalLLMConfig, CaptureMode, UserEdit, DynamicContextMemory, PotentialMainTask, UserNudgeInput, ExportDataV1, DynamicContextItem } from './types';
+import type { TaskItem, CognitiveParserOutput, AppSettings, TaskStatus, ExternalLLMConfig, CaptureMode, UserEdit, DynamicContextMemory, PotentialMainTask, UserNudgeInput, ExportDataV1, DynamicContextItem, MacOSActiveApplicationInfo, ScreenCaptureResponsePayload, KeystrokePayload } from './types';
 import { logger } from './services/logger';
 import { fetchHarmoniaDigitalisDocument } from './services/documentFetcher'; // Will fetch Apex Doctrine
 import * as dynamicContextManager from './services/dynamicContextManager';
+import { nativeHookService, type HookStatus, type HookMessage } from './services/nativeHookService'; // Added nativeHookService import
 
 const TASKS_STORAGE_KEY = 'contextualWeaverTasks_v2';
 const CONTEXTS_STORAGE_KEY = 'contextualWeaverAllContexts_v2';
@@ -75,10 +76,17 @@ const App: React.FC = () => {
   const [showNudgeModal, setShowNudgeModal] = useState<boolean>(false);
   const [taskSearchTerm, setTaskSearchTerm] = useState<string>('');
   const [currentDirective, setCurrentDirective] = useState<string | null>(null);
+  const [nativeHookStatus, setNativeHookStatus] = useState<HookStatus>('disconnected');
+  const [lastHookMessage, setLastHookMessage] = useState<HookMessage | null>(null);
+  const [activeMacosAppInfo, setActiveMacosAppInfo] = useState<MacOSActiveApplicationInfo | null>(null);
+  const [lastHookScreenshot, setLastHookScreenshot] = useState<string | null>(null);
+  const [textToTypeViaHook, setTextToTypeViaHook] = useState<string>("Hello from CTW via Hook!");
+  const [pressEnterAfterTyping, setPressEnterAfterTyping] = useState<boolean>(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const captureIntervalIdRef = useRef<number | null>(null);
+  const typeViaHookButtonRef = useRef<HTMLButtonElement | null>(null);
   
   const isProcessingAnyRef = useRef(isProcessing || isCapturingFrame || isGeneratingSuggestions || isPlanningProject);
   useEffect(() => { 
@@ -118,6 +126,102 @@ const App: React.FC = () => {
       setFullErrorDetails(e);
     }
   }, []);
+
+  // Effect for Native Hook Service
+  useEffect(() => {
+    const handleStatusChange = (status: HookStatus) => {
+      setNativeHookStatus(status);
+      let statusPart = statusMessage.split(' | Hook:')[0];
+      if (!statusPart || statusPart === statusMessage) statusPart = "Status";
+
+      if (status === 'connected') {
+        logger.info(APP_COMPONENT_NAME, "nativeHookEffect", "Native Hook newly connected. Sending ping.");
+        setStatusMessage(`${statusPart} | Hook: Connected (Pinging...)`);
+        nativeHookService.sendMessage("ping").then(response => {
+          if (response && response.type === 'pong') {
+            logger.info(APP_COMPONENT_NAME, "nativeHookEffect", "Received pong from Native Hook:", response.payload);
+            setStatusMessage(`${statusPart} | Hook: Connected (Pong!)`);
+          } else {
+            logger.warn(APP_COMPONENT_NAME, "nativeHookEffect", "Did not receive a valid pong from Native Hook or timed out.", response);
+            setStatusMessage(`${statusPart} | Hook: Connected (No Pong)`);
+          }
+        }).catch(err => {
+            logger.error(APP_COMPONENT_NAME, "nativeHookEffect", "Error sending ping to Native Hook:", err);
+            setStatusMessage(`${statusPart} | Hook: Connected (Ping Err)`);
+        });
+      } else {
+        setStatusMessage(`${statusPart} | Hook: ${status}`);
+      }
+    };
+
+    const handleHookMessage = (message: HookMessage) => {
+      logger.debug(APP_COMPONENT_NAME, "nativeHookEffect", "Received generic message from Native Hook:", message);
+      setLastHookMessage(message);
+      let statusPart = statusMessage.split(' | Hook:')[0];
+      if (!statusPart || statusPart === statusMessage) statusPart = "Status";
+      
+      if (message.type === 'active_application_info_response') {
+        if (message.status === 'success' && message.payload) {
+          setActiveMacosAppInfo(message.payload as MacOSActiveApplicationInfo);
+          logger.info(APP_COMPONENT_NAME, "nativeHookEffect", "Received active application info:", message.payload);
+        } else {
+          setActiveMacosAppInfo(null);
+          logger.error(APP_COMPONENT_NAME, "nativeHookEffect", "Error receiving active application info or payload empty:", message.error_message || "No payload");
+          setStatusMessage(`${statusPart} | Hook: Error getting app info`);
+        }
+      } else if (message.type === 'screen_capture_response') {
+        if (message.status === 'success' && message.payload) {
+          const capturePayload = message.payload as ScreenCaptureResponsePayload;
+          setLastHookScreenshot(`data:image/${capturePayload.format};base64,${capturePayload.imageData}`);
+          logger.info(APP_COMPONENT_NAME, "nativeHookEffect", "Received screen capture from hook.");
+          setStatusMessage(`${statusPart} | Hook: Screenshot received`);
+        } else {
+          setLastHookScreenshot(null);
+          logger.error(APP_COMPONENT_NAME, "nativeHookEffect", "Error receiving screen capture:", message.error_message);
+          setStatusMessage(`${statusPart} | Hook: Screenshot error`);
+        }
+      } else if (message.type === 'keystroke_simulation_response') {
+        if (message.status === 'success') {
+          logger.info(APP_COMPONENT_NAME, "nativeHookEffect", "Keystroke simulation successful:", message.payload);
+          setStatusMessage(`${statusPart} | Hook: Keystrokes sent`);
+        } else {
+          const errorMsg = message.error_message || "Unknown keystroke error";
+          logger.error(APP_COMPONENT_NAME, "nativeHookEffect", "Keystroke simulation failed:", errorMsg);
+          setStatusMessage(`${statusPart} | Hook: Keystroke error (${errorMsg.substring(0,30)}...)`);
+          setError(`Hook Keystroke Error: ${errorMsg}`);
+        }
+      }
+      // Handle other specific message types here if needed
+    };
+
+    nativeHookService.onStatusChange(handleStatusChange);
+    nativeHookService.onMessage(handleHookMessage);
+    
+    // Initialize connection if not already attempting
+    if (nativeHookService.getHookStatus() === 'disconnected') {
+        logger.info(APP_COMPONENT_NAME, "nativeHookEffectSetup", "Hook is disconnected, attempting to connect.");
+        nativeHookService.connect(); // connect() itself updates status via listener
+    } else {
+        // If already connecting or connected, ensure App's state reflects the service's current status
+        // This is important if the App component re-mounts or this effect re-runs
+        // while the service maintained its connection.
+        const currentStatus = nativeHookService.getHookStatus();
+        logger.info(APP_COMPONENT_NAME, "nativeHookEffectSetup", `Hook status on setup: ${currentStatus}. Setting App state.`);
+        setNativeHookStatus(currentStatus);
+        // Manually trigger a status update message if already connected to refresh UI (e.g. for Pong)
+        if (currentStatus === 'connected') {
+            handleStatusChange('connected'); // This will re-trigger the ping and UI update logic
+        }
+    }
+
+    return () => {
+      logger.info(APP_COMPONENT_NAME, "nativeHookEffectCleanup", "Cleaning up Native Hook service connections.");
+      nativeHookService.removeStatusListener(handleStatusChange);
+      nativeHookService.removeMessageListener(handleHookMessage);
+      // Optional: nativeHookService.disconnect(); 
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Ensure statusMessage is not in deps to avoid loops with setStatusMessage
 
   useEffect(() => { try { localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks)); } catch (e) { logger.error(APP_COMPONENT_NAME, "useEffect[tasks]", "Failed to save tasks", e); }}, [tasks]);
   useEffect(() => { try { localStorage.setItem(CONTEXTS_STORAGE_KEY, JSON.stringify(Array.from(allContexts.entries()))); } catch (e) { logger.error(APP_COMPONENT_NAME, "useEffect[allContexts]", "Failed to save contexts", e); }}, [allContexts]);
@@ -634,11 +738,94 @@ const App: React.FC = () => {
   
   let currentStatusMessage = statusMessage;
   if (isMonitoring && topPMTForDisplay && !anyOperationPending) {
-    currentStatusMessage = `AI Focus: ${topPMTForDisplay.description.substring(0,30)}... | ${statusMessage}`;
+    currentStatusMessage = `AI Focus: ${topPMTForDisplay.description.substring(0,30)}... | ${statusMessage.split(' | Hook:')[0]}`;
   } else if (isMonitoring && !anyOperationPending && !topPMTForDisplay) {
-    currentStatusMessage = `Monitoring. AI is discerning focus... | ${statusMessage}`;
+    currentStatusMessage = `Monitoring. AI is discerning focus... | ${statusMessage.split(' | Hook:')[0]}`;
   }
+  // Append Hook status to the general status message
+  currentStatusMessage = `${currentStatusMessage.split(' | Hook:')[0]} | Hook: ${nativeHookStatus}`;
 
+  const handleGetActiveAppInfo = async () => {
+    if (nativeHookStatus !== 'connected') {
+      logger.warn(APP_COMPONENT_NAME, "handleGetActiveAppInfo", "Native Hook not connected.");
+      setStatusMessage("Native Hook not connected. Cannot get app info.");
+      return;
+    }
+    try {
+      setStatusMessage("Requesting active app info from Native Hook...");
+      const response = await nativeHookService.sendMessage("get_active_application_info");
+      // Response is handled by the onMessage listener, but we can log success/failure of send here
+      if (response) { // sendMessage resolves with the response or null on timeout
+        logger.info(APP_COMPONENT_NAME, "handleGetActiveAppInfo", "get_active_application_info command sent, response received by listener or timed out.");
+      } else {
+        logger.warn(APP_COMPONENT_NAME, "handleGetActiveAppInfo", "get_active_application_info command sent, but timed out waiting for direct response from sendMessage.");
+        setStatusMessage((prev: string) => `${prev.split(' | Hook:')[0]} | Hook: App info request timed out`);
+      }
+    } catch (error: any) {
+      logger.error(APP_COMPONENT_NAME, "handleGetActiveAppInfo", "Error sending get_active_application_info command:", error);
+      setStatusMessage(`Error sending app info request: ${error.message.substring(0,50)}`);
+    }
+  };
+
+  const handleRequestHookScreenshot = async () => {
+    if (nativeHookStatus !== 'connected') {
+      logger.warn(APP_COMPONENT_NAME, "handleRequestHookScreenshot", "Native Hook not connected.");
+      setStatusMessage("Native Hook not connected. Cannot capture screen.");
+      return;
+    }
+    try {
+      setLastHookScreenshot(null); // Clear previous screenshot
+      setStatusMessage("Requesting screen capture from Native Hook...");
+      // Payload could be added here to specify capture type, e.g., { mode: "window", windowId: "..." }
+      const response = await nativeHookService.sendMessage("trigger_screen_capture"); 
+      if (response) {
+        logger.info(APP_COMPONENT_NAME, "handleRequestHookScreenshot", "trigger_screen_capture command sent.");
+      } else {
+        logger.warn(APP_COMPONENT_NAME, "handleRequestHookScreenshot", "trigger_screen_capture command sent, but timed out.");
+        setStatusMessage((prev: string) => `${prev.split(' | Hook:')[0]} | Hook: Screen capture request timed out`);
+      }
+    } catch (error: any) {
+      logger.error(APP_COMPONENT_NAME, "handleRequestHookScreenshot", "Error sending trigger_screen_capture command:", error);
+      setStatusMessage(`Error requesting screenshot: ${error.message.substring(0,50)}`);
+    }
+  };
+
+  const handleSimulateKeystrokes = async () => {
+    if (nativeHookStatus !== 'connected') {
+      logger.warn(APP_COMPONENT_NAME, "handleSimulateKeystrokes", "Native Hook not connected.");
+      setStatusMessage("Native Hook not connected. Cannot simulate keystrokes.");
+      return;
+    }
+    if (!textToTypeViaHook.trim()) {
+      logger.warn(APP_COMPONENT_NAME, "handleSimulateKeystrokes", "No text to type.");
+      setStatusMessage("No text provided to simulate.");
+      return;
+    }
+    try {
+      setStatusMessage("Sending keystrokes to Native Hook...");
+      const payload: KeystrokePayload = { 
+        text: textToTypeViaHook, 
+        pressEnter: pressEnterAfterTyping
+      };
+      const response = await nativeHookService.sendMessage("simulate_keystrokes", payload);
+      
+      // Blur the button to prevent re-triggering on Enter if it regains focus
+      if (typeViaHookButtonRef.current) {
+        typeViaHookButtonRef.current.blur();
+      }
+
+      if (response) {
+        logger.info(APP_COMPONENT_NAME, "handleSimulateKeystrokes", "simulate_keystrokes command sent, response handled by listener or timed out.");
+        // Status will be updated by the 'keystroke_simulation_response' listener
+      } else {
+        logger.warn(APP_COMPONENT_NAME, "handleSimulateKeystrokes", "simulate_keystrokes command sent, but timed out waiting for direct response from sendMessage.");
+        setStatusMessage((prev: string) => `${prev.split(' | Hook:')[0]} | Hook: Keystroke request timed out`);
+      }
+    } catch (error: any) {
+      logger.error(APP_COMPONENT_NAME, "handleSimulateKeystrokes", "Error sending simulate_keystrokes command:", error);
+      setStatusMessage(`Error sending keystrokes: ${error.message.substring(0,50)}`);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-700 text-gray-100 flex flex-col items-center p-2 sm:p-4 md:p-6 selection:bg-sky-400 selection:text-sky-900">
@@ -720,6 +907,21 @@ const App: React.FC = () => {
                 {(Array.from(dynamicContextMemory.entries()) as Array<[string, DynamicContextItem]>).sort((a: [string, DynamicContextItem], b: [string, DynamicContextItem]) => b[1].weight - a[1].weight).slice(0,10).map(([key, item]: [string, DynamicContextItem]) => (
                   <p key={key}>- {key} (W: {item.weight.toFixed(2)}, F: {item.frequency}, T: {new Date(item.lastSeenTimestamp).toLocaleTimeString()})</p>
                 ))}
+                {activeMacosAppInfo && (
+                  <div className="mt-2 pt-2 border-t border-sky-600/50">
+                    <p className="font-semibold">Active macOS App:</p>
+                    <p>- Name: {activeMacosAppInfo.application_name}</p>
+                    <p>- Window: {activeMacosAppInfo.window_title}</p>
+                    <p>- Bundle ID: {activeMacosAppInfo.bundle_id}</p>
+                    {activeMacosAppInfo.pid && <p>- PID: {activeMacosAppInfo.pid}</p>}
+                  </div>
+                )}
+                {lastHookScreenshot && (
+                  <div className="mt-2 pt-2 border-t border-sky-600/50">
+                    <p className="font-semibold">Last Hook Screenshot:</p>
+                    <img src={lastHookScreenshot} alt="Screen capture from Hook" className="max-w-full h-auto rounded-md border border-slate-700 mt-1" />
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -774,6 +976,53 @@ const App: React.FC = () => {
           <p className="mt-1">Ensure no sensitive information is visible during screen monitoring.</p>
          {!apexDoctrineContent && <p className="text-red-400 text-xs mt-0.5">Warning: Foundational AI Agent Apex Doctrine failed to load. AI operations may not be fully guided.</p>}
       </footer>
+
+      {/* Diagnostic log for nativeHookStatus before rendering test buttons */}
+      {console.log(APP_COMPONENT_NAME, "Render-Time nativeHookStatus Check:", nativeHookStatus)}
+
+      {/* Temporary Button for testing */}
+      {nativeHookStatus === 'connected' && (
+        <div className="flex space-x-2 mt-2 flex-wrap justify-center items-center">
+          <button 
+            onClick={handleGetActiveAppInfo}
+            className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-700 rounded-md text-white transition-colors mb-2"
+          >
+            Get Active macOS App Info
+          </button>
+          <button 
+            onClick={handleRequestHookScreenshot}
+            className="px-3 py-1.5 text-xs bg-teal-600 hover:bg-teal-700 rounded-md text-white transition-colors mb-2"
+          >
+            Capture Screen (Hook)
+          </button>
+          <div className='flex items-center space-x-1 mb-2'>
+            <input 
+              type="text" 
+              value={textToTypeViaHook} 
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTextToTypeViaHook(e.target.value)} 
+              placeholder="Text to type via Hook"
+              className="p-1.5 text-xs bg-slate-700 border border-slate-600 rounded-md text-slate-100 focus:ring-sky-500 focus:border-sky-500 placeholder-slate-400 w-48"
+            />
+            <button 
+              ref={typeViaHookButtonRef}
+              onClick={handleSimulateKeystrokes}
+              disabled={!textToTypeViaHook.trim()}
+              className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 rounded-md text-white transition-colors disabled:opacity-50"
+            >
+              Type via Hook
+            </button>
+            <label className="flex items-center space-x-1.5 text-xs text-slate-300 ml-2">
+              <input 
+                type="checkbox" 
+                checked={pressEnterAfterTyping} 
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPressEnterAfterTyping(e.target.checked)}
+                className="form-checkbox h-3.5 w-3.5 text-sky-500 bg-slate-700 border-slate-600 rounded focus:ring-sky-500 focus:ring-offset-slate-800"
+              />
+              <span>Send (Enter)</span>
+            </label>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

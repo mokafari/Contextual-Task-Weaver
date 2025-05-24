@@ -9,14 +9,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@google/genai": "^1.0.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "@google/genai": "^1.0.1",
     "uuid": "^11.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
     "@types/react": "^18.3.3",
+    "@vitejs/plugin-react": "^4.5.0",
     "typescript": "~5.7.2",
     "vite": "^6.2.0"
   }

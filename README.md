@@ -2,11 +2,11 @@
 
 ![Contextual Task Weaver UI Screenshot](./ui.png)
 
-**Version:** 1.0 (Post-Merge)
+**Version:** 1.0.1 (Phase 2.5 Complete)
 
 ## Overview
 
-Contextual Task Weaver is an AI-powered Emergent Task Management System (ETMS) designed to seamlessly integrate contextual understanding from your screen or camera activity into an evolving Kanban-style task board. The system aims to embody principles of emergent intelligence. This is envisioned to develop through continuous learning from user interactions and explicit feedback, guided by an Evolving Knowledge Store that enriches the LLM agent's contextual understanding. The system aims to transition from reactive task management to offering increasingly sophisticated proactive and automated assistance. It learns from your interactions, offers proactive assistance through contextual suggestions, and helps you plan projects using external Large Language Models (LLMs). This application is built with React, TypeScript, TailwindCSS, and leverages the Google Gemini API for its core AI capabilities.
+Contextual Task Weaver is an AI-powered Emergent Task Management System (ETMS) designed to seamlessly integrate contextual understanding from your screen or camera activity into an evolving Kanban-style task board. The system aims to embody principles of emergent intelligence. This is envisioned to develop through continuous learning from user interactions and explicit feedback, guided by an Evolving Knowledge Store that enriches the LLM agent's contextual understanding. The system aims to transition from reactive task management to offering increasingly sophisticated proactive and automated assistance. It learns from your interactions, offers proactive assistance through contextual suggestions, helps you plan projects using external Large Language Models (LLMs), and allows for a user-defined 'Current Directive' to guide its focus. This application is built with React, TypeScript, Vite, and TailwindCSS, and leverages the Google Gemini API for its core AI capabilities.
 
 ## Core Features
 
@@ -17,12 +17,18 @@ Contextual Task Weaver is an AI-powered Emergent Task Management System (ETMS) d
     *   Visual preview of the latest capture.
 
 *   **AI-Powered Analysis & Task Evolution:**
-    *   **Cognitive Parser (Gemini):** Analyzes captured images to infer current activity, active application, window titles, key texts, and UI elements.
+    *   **Cognitive Parser (Gemini):** Analyzes captured images to infer current activity, active application, window titles, key texts, UI elements, and importantly, *active user text input*.
     *   **Task Chronographer (Gemini):** Updates a Kanban board (To-Do, Doing, Done) by:
         *   Identifying new tasks from the parsed context.
         *   Updating existing tasks based on ongoing activity.
         *   Marking tasks as complete.
-    *   **Contextual Suggestions (Gemini):** Provides actionable suggestions based on your inferred activity and goals (e.g., next steps, related searches).
+        *   Considers a derived *meta-intent* from sequential contexts and the *current directive* to guide task updates.
+    *   **Contextual Suggestions (Gemini):** Provides actionable suggestions based on your inferred activity, goals, and the *current directive* (e.g., next steps, related searches).
+    *   **Dynamic Context Management & Meta-Intent Stitching:**
+        *   Maintains a weighted memory of contextual keywords and themes.
+        *   Analyzes sequences of contexts to infer a higher-level *meta-intent*, which informs task generation and suggestion relevance.
+    *   **Promptable Current Directive:**
+        *   Users can set a specific textual directive (e.g., "Focus on debugging Python code," "Research market trends for X") that guides the AI's interpretation of context, task generation, and suggestions.
     *   **Enhanced LLM Orchestration (Future Vision):** Architectural planning for potentially leveraging diverse, specialized LLMs for various internal cognitive tasks as the system's complexity and capabilities expand, allowing for more nuanced analysis and decision-making.
 
 *   **Kanban Task Management:**
@@ -40,44 +46,59 @@ Contextual Task Weaver is an AI-powered Emergent Task Management System (ETMS) d
     *   **External LLM Connectors:** Add, edit, or delete configurations for external LLMs, including API endpoint, API key, and a custom prompt instruction for task generation.
 
 *   **Local Storage Persistence:**
-    *   Tasks, detailed context history (`allContexts`), application settings, and LLM configurations are saved in your browser's local storage, so your data persists across sessions.
+    *   Tasks, detailed context history (`allContexts`), application settings, LLM configurations, dynamic context memory, and potential main tasks are saved in your browser's local storage, so your data persists across sessions.
 
 ## Tech Stack
 
-*   **Frontend:** React 19 (using `react@^19.1.0` via esm.sh)
+*   **Frontend:** React 18+
+*   **Build Tool:** Vite
 *   **Language:** TypeScript
 *   **Styling:** TailwindCSS
 *   **AI:** Google Gemini API (`@google/genai`)
 *   **State Management:** React Hooks (`useState`, `useEffect`, `useCallback`, `useRef`)
-*   **Utilities:** `uuid` for generating unique IDs.
+*   **Dependencies:** Managed via `package.json` (e.g., `uuid` for generating unique IDs).
 
 ## Setup and Running
 
 1.  **API Key:**
     *   This application requires a Google Gemini API key.
-    *   The API key **must** be provided as an environment variable named `API_KEY`.
-    *   **Important:** `process.env.API_KEY` is accessed directly in the code (`services/geminiService.ts`). Ensure this environment variable is correctly set up in the environment where you serve or build the application. The application **will not** prompt you for an API key.
+    *   Create a `.env` file in the project root.
+    *   Add your API key to the `.env` file like this:
+        ```
+        VITE_API_KEY=your_actual_gemini_api_key_here
+        ```
+    *   The application accesses this key via `import.meta.env.VITE_API_KEY`.
 
 2.  **Dependencies:**
-    *   Dependencies are managed via an `importmap` in `index.html`, fetching them from `esm.sh`. No explicit `npm install` or `package.json` is used in this setup.
+    *   Install dependencies using npm (or your preferred package manager):
+        ```bash
+        npm install
+        ```
 
 3.  **Running the Application:**
-    *   Serve the `index.html` file using a simple HTTP server. For example, using Node.js `http-server`:
+    *   Start the Vite development server:
         ```bash
-        npx http-server .
+        npm run dev
         ```
-    *   Open the provided URL in a modern web browser that supports ES modules, screen capture, and camera access.
+    *   Open the provided local URL (usually `http://localhost:5173/`) in a modern web browser that supports screen capture and camera access.
 
 ## Key Files and Folder Structure
 
-*   `index.html`: Main entry point, loads TailwindCSS, defines importmap, and mounts the React app.
+*   `index.html`: Main entry point, loads TailwindCSS, and mounts the React app.
 *   `index.tsx`: Initializes and renders the main `App` component.
-*   `styles.css`: Global styles, TailwindCSS imports, and custom scrollbar styles.
 *   `App.tsx`: The core application component, managing state, logic, and orchestrating UI components.
+*   `types.ts`: Defines all TypeScript types and interfaces used throughout the application (located at the project root).
 *   `roadmap.md`: Outlines the future development path and vision for the project.
+*   `components.md`: Documents the UI components.
+*   `data_structures_and_context_management.md`: Documents data structures and context management strategies.
+*   `package.json`: Lists project dependencies and scripts.
+*   `vite.config.ts`: Configuration for the Vite build tool.
+*   `.env`: Stores environment variables like the API key (should be in `.gitignore`).
+*   `tsconfig.json`: TypeScript compiler configuration.
+*   `styles.css`: Global styles, TailwindCSS imports, and custom scrollbar styles.
 *   `metadata.json`: Contains application metadata, including permissions for camera and display capture.
 *   **`components/`**: Contains all React UI components:
-    *   `MonitoringControls.tsx`: Buttons and controls for starting/stopping monitoring, manual capture, settings, capture mode selection.
+    *   `MonitoringControls.tsx`: Buttons and controls for starting/stopping monitoring, manual capture, settings, capture mode selection, and setting the Current Directive.
     *   `TaskColumn.tsx`: Represents a column (To-Do, Doing, Done) in the Kanban board.
     *   `TaskCard.tsx`: Displays individual task details.
     *   `SettingsModal.tsx`: Modal for configuring app settings and external LLM connectors.
@@ -86,11 +107,11 @@ Contextual Task Weaver is an AI-powered Emergent Task Management System (ETMS) d
     *   `ScreenPreview.tsx`: Displays the latest captured screen/camera image.
     *   `LoadingSpinner.tsx`, `ErrorMessage.tsx`: Utility UI components.
 *   **`services/`**:
-    *   `geminiService.ts`: Handles all interactions with the Google Gemini API (Cognitive Parser, Task Chronographer, Contextual Suggestions).
+    *   `geminiService.ts`: Handles all interactions with the Google Gemini API (Cognitive Parser, Task Chronographer, Contextual Suggestions), now incorporating the Current Directive and Meta-Intent.
+    *   `dynamicContextManager.ts`: Manages the dynamic context memory, potential main tasks, and meta-intent analysis.
     *   `logger.ts`: Basic structured logging utility.
     *   `documentFetcher.ts`: Utility for fetching external documents like Harmonia Digitalis.
-*   **`types/`**:
-    *   `types.ts`: Defines all TypeScript types and interfaces used throughout the application.
+*   **`types/` is now `types.ts` at the root.** (Correction: this line is redundant as types.ts is already listed above)
 
 ## Important Considerations
 
@@ -108,4 +129,4 @@ The long-term vision for Contextual Task Weaver extends significantly beyond cur
 *   **Deep Knowledge Store Evolution:** Transitioning towards a more powerful backend Knowledge Store (e.g., graph database) to support advanced reasoning, longitudinal learning, and complex pattern analysis necessary for true emergent intelligence.
 *   **Principled AI Operation:** Ensuring all AI operations are guided by foundational ethical and operational principles, such as those outlined in the "Harmonia Digitalis Document," which will be integrated into the core reasoning processes of its LLM agents.
 
-Refer to the `roadmap.md` file for a more granular, phased outline of planned features.
+Refer to the `roadmap.md` file for a more granular, phased outline of planned features, including the upcoming "Co-Captain" (v2.8) enhancements for deeper macOS integration and control.
