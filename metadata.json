@@ -1,0 +1,9 @@
+{
+  "name": "Contextual Task Weaver (hyph edition",
+  "description": "An AI-powered Emergent Task Management System that weaves contextual understanding from screen/camera activity into an evolving task board, learns from interactions, and offers proactive assistance.",
+  "requestFramePermissions": [
+    "camera",
+    "display-capture"
+  ],
+  "prompt": ""
+}
