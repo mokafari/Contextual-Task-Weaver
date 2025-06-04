@@ -1,6 +1,5 @@
-
 import React, { useState, useEffect, useRef } from 'react';
-import type { AppSettings, ExternalLLMConfig } from '../types';
+import type { AppSettings, ExternalLLMConfig, LockedKeyword } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../services/logger';
 
@@ -9,7 +8,7 @@ const COMPONENT_NAME = "SettingsModal";
 interface SettingsModalProps {
   currentSettings: AppSettings;
   externalLLMConfigs: ExternalLLMConfig[];
-  onSaveAppSettings: (newSettings: Pick<AppSettings, 'captureIntervalSeconds' | 'maxTaskListSize'>) => void;
+  onSaveAppSettings: (newSettings: AppSettings) => void;
   onSaveLLMConfigs: (newConfigs: ExternalLLMConfig[]) => void;
   onClose: () => void;
   onToggleShowDebugInfo: () => void; 
@@ -71,21 +70,20 @@ const LLMConfigInput: React.FC<{
   </>
 );
 
-
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   currentSettings,
   externalLLMConfigs: initialLLMConfigs,
   onSaveAppSettings,
   onSaveLLMConfigs,
   onClose,
-  onToggleShowDebugInfo,
   onExportData,
   onImportData,
 }) => {
   const [captureInterval, setCaptureInterval] = useState<string>(String(currentSettings.captureIntervalSeconds));
   const [maxTasks, setMaxTasks] = useState<string>(String(currentSettings.maxTaskListSize));
   const [showDebug, setShowDebug] = useState<boolean>(currentSettings.showDebugInfo);
-  
+  const [localLockedKeywords, setLocalLockedKeywords] = useState<LockedKeyword[]>(currentSettings.lockedKeywords || []);
+
   const [llmConfigs, setLlmConfigs] = useState<ExternalLLMConfig[]>(() => 
     initialLLMConfigs.map(c => ({...c}))
   );
@@ -93,7 +91,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isAddingNewLlm, setIsAddingNewLlm] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const importFileRef = useRef<HTMLInputElement>(null);
+  const [activeTab, setActiveTab] = useState<'general' | 'eks' | 'llm' | 'data'>('general');
 
+  const [editingLockedKeyword, setEditingLockedKeyword] = useState<Partial<LockedKeyword> | null>(null);
+  const [isAddingNewLockedKeyword, setIsAddingNewLockedKeyword] = useState(false);
 
   useEffect(() => {
     setLlmConfigs(initialLLMConfigs.map(c => ({...c})));
@@ -103,8 +104,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setCaptureInterval(String(currentSettings.captureIntervalSeconds));
     setMaxTasks(String(currentSettings.maxTaskListSize));
     setShowDebug(currentSettings.showDebugInfo);
+    setLocalLockedKeywords(currentSettings.lockedKeywords || []);
   }, [currentSettings]);
-
 
   const handleSaveAllSettingsAndClose = () => {
     const intervalNum = parseInt(captureInterval, 10);
@@ -114,7 +115,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       alert("Please enter a valid positive number for the capture interval (e.g., 5 or greater).");
       return;
     }
-     if (intervalNum < 3 && (currentSettings.captureIntervalSeconds >=3 && intervalNum < currentSettings.captureIntervalSeconds) ) {
+    if (intervalNum < 3 && (currentSettings.captureIntervalSeconds >=3 && intervalNum < currentSettings.captureIntervalSeconds) ) {
       if(!window.confirm("Warning: Setting a very low capture interval (<3s) can heavily load the AI and may lead to rapid quota usage or performance issues. Are you sure?")) return;
     }
     if (isNaN(maxTasksNum) || maxTasksNum < 5) { 
@@ -123,19 +124,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
     
     onSaveAppSettings({ 
+      ...currentSettings,
       captureIntervalSeconds: intervalNum,
       maxTaskListSize: maxTasksNum,
+      showDebugInfo: showDebug,
+      lockedKeywords: localLockedKeywords,
     });
     onSaveLLMConfigs(llmConfigs.map(c => ({...c}))); 
     onClose();
   };
 
   const handleAddNewLlmConfig = () => {
+    setActiveTab('llm');
     setIsAddingNewLlm(true);
     setEditingLlmConfig({ id: uuidv4(), name: '', apiUrl: '', apiKey: '', promptInstruction: 'Break down the following user goal into a list of actionable tasks. Respond with ONLY a JSON array of objects, where each object has a "description" field (string), and optionally a "name" field for a shorter title. e.g., [{"name":"Task Title", "description":"Task 1 details"}, {"description":"Task 2 details"}]. User Goal: ' });
   };
 
   const handleEditLlmConfig = (configToEdit: ExternalLLMConfig) => {
+    setActiveTab('llm');
     setIsAddingNewLlm(false);
     setEditingLlmConfig({ ...configToEdit });
   };
@@ -157,6 +163,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleDeleteLlmConfig = (idToDelete: string) => {
     if (window.confirm("Are you sure you want to delete this LLM connector? This action cannot be undone.")) {
       setLlmConfigs(prev => prev.filter(c => c.id !== idToDelete));
+      if (editingLlmConfig && editingLlmConfig.id === idToDelete) {
+        setEditingLlmConfig(null); 
+        setIsAddingNewLlm(false);
+      }
     }
   };
 
@@ -171,13 +181,259 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const triggerImport = () => {
     if (selectedFile) {
       onImportData(selectedFile);
-      setSelectedFile(null); // Reset file input
+      setSelectedFile(null); 
       if(importFileRef.current) importFileRef.current.value = "";
     } else {
       alert("Please select a JSON file to import.");
     }
   };
 
+  const handleAddNewLockedKeyword = () => {
+    setActiveTab('eks');
+    setIsAddingNewLockedKeyword(true);
+    setEditingLockedKeyword({ id: uuidv4(), phrase: '', meaning: '', context: '', priority: 3, createdAt: Date.now() });
+  };
+
+  const handleEditLockedKeyword = (keywordToEdit: LockedKeyword) => {
+    setActiveTab('eks');
+    setIsAddingNewLockedKeyword(false);
+    setEditingLockedKeyword({ ...keywordToEdit });
+  };
+
+  const handleSaveCurrentLockedKeyword = () => {
+    if (editingLockedKeyword && editingLockedKeyword.phrase && editingLockedKeyword.priority !== undefined) {
+      const phrase = editingLockedKeyword.phrase.trim();
+      if (!phrase) {
+        alert("Phrase cannot be empty.");
+        return;
+      }
+      const priority = Number(editingLockedKeyword.priority);
+      if (isNaN(priority) || priority < 1 || priority > 5) {
+        alert("Priority must be a number between 1 and 5.");
+        return;
+      }
+
+      const finalKeyword: LockedKeyword = {
+        id: editingLockedKeyword.id || uuidv4(),
+        phrase: phrase,
+        meaning: editingLockedKeyword.meaning?.trim() || undefined,
+        context: editingLockedKeyword.context?.trim() || undefined,
+        priority: priority,
+        createdAt: editingLockedKeyword.createdAt || Date.now(),
+        lastUsedTimestamp: editingLockedKeyword.lastUsedTimestamp
+      };
+
+      if (isAddingNewLockedKeyword) {
+        setLocalLockedKeywords(prev => [...prev, finalKeyword].sort((a,b) => b.priority - a.priority || a.phrase.localeCompare(b.phrase)));
+      } else {
+        setLocalLockedKeywords(prev => prev.map(k => k.id === finalKeyword.id ? finalKeyword : k).sort((a,b) => b.priority - a.priority || a.phrase.localeCompare(b.phrase)));
+      }
+      setEditingLockedKeyword(null);
+      setIsAddingNewLockedKeyword(false);
+    } else {
+      alert("Please fill in at least the Phrase and Priority for the Locked Keyword.");
+    }
+  };
+
+  const handleDeleteLockedKeyword = (idToDelete: string) => {
+    if (window.confirm("Are you sure you want to delete this Locked Keyword? This action cannot be undone.")) {
+      setLocalLockedKeywords(prev => prev.filter(k => k.id !== idToDelete));
+      if (editingLockedKeyword && editingLockedKeyword.id === idToDelete) {
+        setEditingLockedKeyword(null);
+        setIsAddingNewLockedKeyword(false);
+      }
+    }
+  };
+
+  const renderGeneralSettings = () => (
+    <>
+      <h3 className="text-lg font-semibold text-sky-400 mb-3">Application Settings</h3>
+      <div className="mb-3">
+        <label htmlFor="captureInterval" className="block text-xs font-medium text-slate-300 mb-1">Capture Interval (seconds)</label>
+        <input
+          type="number"
+          id="captureInterval"
+          min="3"
+          value={captureInterval}
+          onChange={(e) => setCaptureInterval(e.target.value)}
+          className="w-full p-2 text-sm bg-slate-700 border border-slate-600 rounded-md text-slate-100 focus:ring-sky-500 focus:border-sky-500"
+        />
+        <p className="text-xs text-slate-500 mt-1">Interval for screen/camera captures. Min 3s. Lower values are more responsive but use more resources.</p>
+      </div>
+      <div className="mb-4">
+        <label htmlFor="maxTasks" className="block text-xs font-medium text-slate-300 mb-1">Maximum Task List Size</label>
+        <input
+          type="number"
+          id="maxTasks"
+          min="5"
+          value={maxTasks}
+          onChange={(e) => setMaxTasks(e.target.value)}
+          className="w-full p-2 text-sm bg-slate-700 border border-slate-600 rounded-md text-slate-100 focus:ring-sky-500 focus:border-sky-500"
+        />
+        <p className="text-xs text-slate-500 mt-1">Max tasks to keep. Older tasks trimmed. Min 5.</p>
+      </div>
+      <div className="flex items-center mb-4">
+        <input
+          id="showDebugInfo"
+          type="checkbox"
+          checked={showDebug}
+          onChange={(e) => setShowDebug(e.target.checked)} 
+          className="form-checkbox h-4 w-4 text-sky-500 bg-slate-700 border-slate-600 rounded focus:ring-sky-500 focus:ring-offset-slate-800"
+        />
+        <label htmlFor="showDebugInfo" className="ml-2 text-sm text-slate-300">Show Debug Information</label>
+      </div>
+    </>
+  );
+
+  const renderLLMSettings = () => (
+    <>
+      <h3 className="text-lg font-semibold text-sky-400 mb-3">External LLM Connectors <span className="text-xs text-slate-500">(for "Plan with AI")</span></h3>
+      {llmConfigs.length === 0 && !editingLlmConfig && (
+        <p className="text-sm text-slate-400 mb-3">No LLM connectors configured. Add one for "Plan with AI".</p>
+      )}
+      <div className="space-y-3 max-h-60 overflow-y-auto custom-scrollbar-xs pr-2">
+        {llmConfigs.map(config => (
+          <div key={config.id} className="p-3 bg-slate-750 rounded-md border border-slate-600">
+            <p className="text-sm font-semibold text-sky-300">{config.name}</p>
+            <p className="text-xs text-slate-400 truncate">API URL: {config.apiUrl}</p>
+            <div className="mt-2 space-x-2">
+              <button onClick={() => handleEditLlmConfig(config)} className="text-xs text-sky-400 hover:text-sky-300">Edit</button>
+              <button onClick={() => handleDeleteLlmConfig(config.id)} className="text-xs text-red-400 hover:text-red-300">Delete</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      {!editingLlmConfig && (
+        <button onClick={handleAddNewLlmConfig} className="mt-3 w-full text-sm bg-sky-600 hover:bg-sky-500 text-white py-2 px-4 rounded-md transition-colors">
+          Add New LLM Connector
+        </button>
+      )}
+    </>
+  );
+  
+  const renderEKSSettings = () => (
+    <>
+      <h3 className="text-lg font-semibold text-sky-400 mb-3">Locked Keywords (EKS)</h3>
+      <p className="text-xs text-slate-400 mb-2">Define keywords for high importance in context analysis. Phrase & Priority (1-5, 5=highest) required.</p>
+      {localLockedKeywords.length === 0 && !editingLockedKeyword && (
+         <p className="text-sm text-slate-400 mb-3">No Locked Keywords defined.</p>
+      )}
+      <div className="space-y-2 max-h-60 overflow-y-auto custom-scrollbar-xs pr-2 mb-3">
+        {localLockedKeywords.sort((a,b) => b.priority - a.priority || a.phrase.localeCompare(b.phrase)).map(kw => (
+          <div key={kw.id} className="p-3 bg-slate-750 rounded-md border border-slate-600">
+             <div className="flex justify-between items-start">
+                <div className="flex-grow">
+                    <p className="text-sm font-semibold text-sky-300 break-all">{kw.phrase} <span className="text-xs text-slate-400">(Priority: {kw.priority})</span></p>
+                    {kw.meaning && <p className="text-xs text-slate-400 mt-0.5 break-all">Meaning: {kw.meaning}</p>}
+                    {kw.context && <p className="text-xs text-slate-400 mt-0.5 break-all">Context: {kw.context}</p>}
+                </div>
+                <div className="mt-1 space-x-2 flex-shrink-0 ml-2">
+                    <button onClick={() => handleEditLockedKeyword(kw)} className="text-xs text-sky-400 hover:text-sky-300 px-2 py-1 rounded bg-slate-600 hover:bg-slate-500">Edit</button>
+                    <button onClick={() => handleDeleteLockedKeyword(kw.id)} className="text-xs text-red-400 hover:text-red-300 px-2 py-1 rounded bg-slate-600 hover:bg-slate-500">Del</button>
+                </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      {!editingLockedKeyword && (
+        <button onClick={handleAddNewLockedKeyword} className="mt-1 w-full text-sm bg-teal-600 hover:bg-teal-500 text-white py-2 px-4 rounded-md transition-colors">
+          Add New Locked Keyword
+        </button>
+      )}
+    </>
+  );
+  
+  const renderDataSettings = () => (
+    <>
+      <h3 className="text-lg font-semibold text-sky-400 mb-3">Data Management</h3>
+      <div className="mb-4">
+        <button 
+          onClick={onExportData}
+          className="w-full text-sm bg-blue-600 hover:bg-blue-500 text-white py-2 px-4 rounded-md transition-colors mb-2"
+        >
+          Export All Data
+        </button>
+        <p className="text-xs text-slate-500">Exports tasks, contexts, and settings to JSON.</p>
+      </div>
+      <div>
+        <label htmlFor="importFile" className="block text-xs font-medium text-slate-300 mb-1">Import Data from JSON</label>
+        <div className="flex space-x-2">
+          <input 
+            type="file" 
+            id="importFile"
+            ref={importFileRef}
+            accept=".json"
+            onChange={handleFileSelect}
+            className="block w-full text-xs text-slate-300 file:mr-2 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-sky-600 file:text-white hover:file:bg-sky-500 transition-colors cursor-pointer"
+          />
+          <button 
+            onClick={triggerImport} 
+            disabled={!selectedFile}
+            className="text-sm bg-green-600 hover:bg-green-500 text-white py-2 px-3 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Import
+          </button>
+        </div>
+        {selectedFile && <p className="text-xs text-slate-400 mt-1">Selected: {selectedFile.name}</p>}
+        <p className="text-xs text-slate-500 mt-1">Warning: Importing overwrites current data. Backup if needed.</p>
+      </div>
+    </>
+  );
+
+  const renderActiveTabContent = () => {
+    if (editingLlmConfig) {
+      return (
+        <div>
+          <h3 className="text-lg font-semibold text-sky-400 mb-3">{isAddingNewLlm ? "Add New" : "Edit"} LLM Connector</h3>
+          <LLMConfigInput
+            config={editingLlmConfig}
+            onUpdate={(updatedField) => setEditingLlmConfig(prev => ({ ...prev, ...updatedField }))}
+          />
+          <div className="flex justify-end space-x-2 mt-4">
+            <button onClick={() => { setEditingLlmConfig(null); setIsAddingNewLlm(false); }} className="text-sm text-slate-300 hover:text-white py-2 px-4 rounded-md">Cancel</button>
+            <button onClick={handleSaveCurrentLlmConfig} className="text-sm bg-green-600 hover:bg-green-500 text-white py-2 px-4 rounded-md transition-colors">Save Connector</button>
+          </div>
+        </div>
+      );
+    } 
+    if (editingLockedKeyword) {
+      return (
+        <div>
+          <h3 className="text-lg font-semibold text-sky-400 mb-3">{isAddingNewLockedKeyword ? "Add New" : "Edit"} Locked Keyword</h3>
+          <div className="space-y-3 p-1">
+            <div className="mb-2">
+              <label htmlFor="lkPhrase" className="block text-xs font-medium text-slate-300 mb-0.5">Keyword/Phrase (Required)</label>
+              <input type="text" id="lkPhrase" value={editingLockedKeyword.phrase || ''} onChange={e => setEditingLockedKeyword(k => ({...k, phrase: e.target.value}))} className="w-full p-1.5 text-sm bg-slate-700 border border-slate-600 rounded-md text-slate-100 focus:ring-sky-500 focus:border-sky-500"/>
+            </div>
+            <div className="mb-2">
+              <label htmlFor="lkMeaning" className="block text-xs font-medium text-slate-300 mb-0.5">Meaning/Expansion (Optional)</label>
+              <textarea id="lkMeaning" rows={2} value={editingLockedKeyword.meaning || ''} onChange={e => setEditingLockedKeyword(k => ({...k, meaning: e.target.value}))} className="w-full p-1.5 text-sm bg-slate-700 border border-slate-600 rounded-md text-slate-100 custom-scrollbar-xs focus:ring-sky-500 focus:border-sky-500"/>
+            </div>
+            <div className="mb-2">
+              <label htmlFor="lkContext" className="block text-xs font-medium text-slate-300 mb-0.5">Specific Context (Optional)</label>
+              <input type="text" id="lkContext" value={editingLockedKeyword.context || ''} onChange={e => setEditingLockedKeyword(k => ({...k, context: e.target.value}))} className="w-full p-1.5 text-sm bg-slate-700 border border-slate-600 rounded-md text-slate-100 focus:ring-sky-500 focus:border-sky-500"/>
+            </div>
+            <div>
+              <label htmlFor="lkPriority" className="block text-xs font-medium text-slate-300 mb-0.5">Priority (1-5, Required)</label>
+              <input type="number" id="lkPriority" min="1" max="5" value={editingLockedKeyword.priority || 3} onChange={e => setEditingLockedKeyword(k => ({...k, priority: parseInt(e.target.value,10) || 3}))} className="w-full p-1.5 text-sm bg-slate-700 border border-slate-600 rounded-md text-slate-100 focus:ring-sky-500 focus:border-sky-500"/>
+            </div>
+          </div>
+          <div className="flex justify-end space-x-2 mt-4">
+            <button onClick={() => { setEditingLockedKeyword(null); setIsAddingNewLockedKeyword(false); }} className="text-sm text-slate-300 hover:text-white py-2 px-4 rounded-md">Cancel</button>
+            <button onClick={handleSaveCurrentLockedKeyword} className="text-sm bg-green-600 hover:bg-green-500 text-white py-2 px-4 rounded-md transition-colors">Save Keyword</button>
+          </div>
+        </div>
+      );
+    }
+
+    switch (activeTab) {
+      case 'general': return renderGeneralSettings();
+      case 'eks': return renderEKSSettings();
+      case 'llm': return renderLLMSettings();
+      case 'data': return renderDataSettings();
+      default: return renderGeneralSettings();
+    }
+  };
 
   return (
     <div
@@ -186,147 +442,60 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       aria-modal="true"
       aria-labelledby="settings-modal-title"
     >
-      <div className="bg-slate-800 p-4 sm:p-6 rounded-lg shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto custom-scrollbar">
-        <h2 id="settings-modal-title" className="text-xl sm:text-2xl font-bold text-sky-300 mb-5">Settings</h2>
-
-        {editingLlmConfig ? (
-          // LLM Config Editing UI (from previous correct implementation)
-          <div>
-            <h3 className="text-lg font-semibold text-sky-400 mb-3">{isAddingNewLlm ? "Add New" : "Edit"} LLM Connector</h3>
-            <LLMConfigInput
-              config={editingLlmConfig}
-              onUpdate={(updatedField) => setEditingLlmConfig(prev => ({ ...prev, ...updatedField }))}
-            />
-            <div className="flex justify-end space-x-2 mt-4">
-              <button onClick={() => setEditingLlmConfig(null)} className="px-3 py-1.5 text-sm rounded bg-slate-600 hover:bg-slate-500">Cancel</button>
-              <button onClick={handleSaveCurrentLlmConfig} className="px-3 py-1.5 text-sm rounded bg-sky-600 hover:bg-sky-500">Save Connector</button>
-            </div>
-            <hr className="my-5 border-slate-700" />
+      <div className="bg-slate-800 p-4 sm:p-6 rounded-lg shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
+        <div className="flex justify-between items-center mb-4">
+          <h2 id="settings-modal-title" className="text-xl sm:text-2xl font-bold text-sky-300">Settings</h2>
+          <div className="border-b-0 flex-grow flex justify-start ml-6">
+            <nav className="-mb-px flex space-x-1 sm:space-x-2" aria-label="Tabs">
+              {(['general', 'eks', 'llm', 'data'] as Array<'general' | 'llm' | 'eks' | 'data'>).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => {
+                    if ((editingLlmConfig && tab !== 'llm') || (editingLockedKeyword && tab !== 'eks')) {
+                      if (!window.confirm("You have unsaved changes. Discard and switch tab?")) return;
+                      setEditingLlmConfig(null); setIsAddingNewLlm(false);
+                      setEditingLockedKeyword(null); setIsAddingNewLockedKeyword(false);
+                    }
+                    setActiveTab(tab);
+                  }}
+                  className={`whitespace-nowrap py-2 px-2 sm:px-3 border-b-2 font-medium text-xs sm:text-sm transition-colors
+                    ${activeTab === tab ? 'border-sky-500 text-sky-400' : 'border-transparent text-slate-400 hover:text-sky-300 hover:border-slate-500'}
+                  `}
+                >
+                  {tab.charAt(0).toUpperCase() + tab.slice(1).replace('llm', 'LLM').replace('eks','EKS')}
+                </button>
+              ))}
+            </nav>
           </div>
-        ) : (
-          <>
-            <h3 className="text-md sm:text-lg font-semibold text-sky-400 mb-2">App Configuration</h3>
-            <div className="mb-4">
-              <label htmlFor="captureInterval" className="block text-sm font-medium text-slate-300 mb-1">
-                Capture Interval (seconds)
-              </label>
-              <input
-                type="number" id="captureInterval" value={captureInterval}
-                onChange={(e) => setCaptureInterval(e.target.value)} min="3" step="1"
-                className="w-full p-2 bg-slate-700 border border-slate-600 rounded-md text-slate-100 focus:ring-sky-500 focus:border-sky-500"
-                aria-describedby="captureIntervalHelp"
-              />
-              <p id="captureIntervalHelp" className="text-xs text-slate-400 mt-1">
-                Frequency of automatic captures. Min 3s.
-              </p>
-            </div>
-            <div className="mb-4">
-              <label htmlFor="maxTaskListSize" className="block text-sm font-medium text-slate-300 mb-1">
-                Max Task List Size
-              </label>
-              <input
-                type="number" id="maxTaskListSize" value={maxTasks}
-                onChange={(e) => setMaxTasks(e.target.value)} min="5" step="1"
-                className="w-full p-2 bg-slate-700 border border-slate-600 rounded-md text-slate-100 focus:ring-sky-500 focus:border-sky-500"
-                aria-describedby="maxTaskListSizeHelp"
-              />
-              <p id="maxTaskListSizeHelp" className="text-xs text-slate-400 mt-1">
-                Max tasks to keep. Oldest are removed if limit exceeded. Min 5.
-              </p>
-            </div>
-             <div className="mb-4">
-              <label htmlFor="showDebugInfo" className="flex items-center text-sm font-medium text-slate-300">
-                <input
-                  type="checkbox" id="showDebugInfo" checked={showDebug}
-                  onChange={() => { setShowDebug(!showDebug); onToggleShowDebugInfo(); }}
-                  className="mr-2 h-4 w-4 rounded border-slate-500 text-sky-500 focus:ring-sky-400 accent-sky-500"
-                />
-                Show Debug Info (Dynamic Context, PMTs, Performance)
-              </label>
-            </div>
-            <hr className="my-5 border-slate-700" />
-
-            <div className="mb-4">
-                <div className="flex justify-between items-center mb-3">
-                    <h3 className="text-md sm:text-lg font-semibold text-sky-400">External LLM Connectors (for "Plan with AI")</h3>
-                    <button 
-                        onClick={handleAddNewLlmConfig}
-                        className="px-3 py-1.5 text-sm font-medium rounded-md bg-sky-600 hover:bg-sky-500 text-white transition-colors"
-                    > + Add New </button>
-                </div>
-                {llmConfigs.length === 0 ? (
-                    <p className="text-sm text-slate-400 italic">No external LLM connectors configured.</p>
-                ) : (
-                    <ul className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar-xs pr-1">
-                    {llmConfigs.map(config => (
-                        <li key={config.id} className="p-2.5 bg-slate-700/60 rounded-md border border-slate-600">
-                        <div className="flex justify-between items-start">
-                            <div>
-                                <p className="font-semibold text-slate-200 text-sm">{config.name}</p>
-                                <p className="text-xs text-slate-400 truncate max-w-[200px] sm:max-w-xs" title={config.apiUrl}>{config.apiUrl}</p>
-                            </div>
-                            <div className="flex space-x-1.5 flex-shrink-0 ml-2">
-                            <button onClick={() => handleEditLlmConfig(config)} className="text-xs px-2 py-1 rounded bg-slate-600 hover:bg-slate-500">Edit</button>
-                            <button onClick={() => handleDeleteLlmConfig(config.id)} className="text-xs px-2 py-1 rounded bg-red-700 hover:bg-red-600">Del</button>
-                            </div>
-                        </div>
-                        </li>
-                    ))}
-                    </ul>
-                )}
-            </div>
-            <hr className="my-5 border-slate-700" />
-            
-            {/* Data Portability Section */}
-            <div className="mb-4">
-                 <h3 className="text-md sm:text-lg font-semibold text-sky-400 mb-2">Data Portability</h3>
-                 <div className="space-y-3">
-                    <div>
-                        <button
-                            onClick={onExportData}
-                            className="w-full px-3 py-2 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-500 text-white transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400"
-                        > Export All Application Data
-                        </button>
-                        <p className="text-xs text-slate-400 mt-1">Download all your tasks, contexts, settings, and AI configurations as a JSON file.</p>
-                    </div>
-                    <div>
-                        <label htmlFor="importFile" className="block text-sm font-medium text-slate-300 mb-1">Import Data from JSON File:</label>
-                        <input 
-                            type="file" 
-                            id="importFile" 
-                            ref={importFileRef}
-                            accept=".json" 
-                            onChange={handleFileSelect}
-                            className="block w-full text-sm text-slate-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-sky-700 file:text-sky-100 hover:file:bg-sky-600 cursor-pointer mb-2"
-                        />
-                        <button
-                            onClick={triggerImport}
-                            disabled={!selectedFile}
-                            className="w-full px-3 py-2 text-sm font-medium rounded-md bg-teal-600 hover:bg-teal-500 text-white transition-colors focus:outline-none focus:ring-2 focus:ring-teal-400 disabled:opacity-50"
-                        > Import from Selected File
-                        </button>
-                        <p className="text-xs text-orange-400 mt-1">Warning: Importing will overwrite ALL current application data. This action cannot be undone.</p>
-                    </div>
-                 </div>
-            </div>
-
-
-          </>
-        )}
-
-        <div className="mt-6 flex justify-end space-x-2 sm:space-x-3">
-          <button
-            type="button" onClick={onClose}
-            className="px-3 py-2 sm:px-4 sm:py-2 text-sm font-medium rounded-md bg-slate-600 hover:bg-slate-500 text-slate-200 transition-colors focus:outline-none focus:ring-2 focus:ring-slate-400"
-            aria-label="Cancel and close settings"
-          > Cancel </button>
-          <button
-            type="button" onClick={handleSaveAllSettingsAndClose}
-            className="px-3 py-2 sm:px-4 sm:py-2 text-sm font-medium rounded-md bg-sky-600 hover:bg-sky-500 text-white transition-colors focus:outline-none focus:ring-2 focus:ring-sky-400"
-            aria-label="Save all settings and close"
-            disabled={!!editingLlmConfig} // Disable if actively editing an LLM config
-          > Save & Close </button>
+          <button onClick={onClose} className="text-slate-400 hover:text-red-400 transition-colors p-1 rounded-full -mr-2 -mt-2">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+            </svg>
+          </button>
         </div>
+        
+        <div className="mt-1">
+          {renderActiveTabContent()} 
+        </div>
+
+        {!editingLlmConfig && !editingLockedKeyword && (
+          <div className="mt-6 pt-4 border-t border-slate-700 flex justify-end space-x-3">
+            <button
+              type="button"
+              onClick={onClose} 
+              className="px-4 py-2 text-sm font-medium text-slate-300 bg-slate-600 hover:bg-slate-500 rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-sky-500"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveAllSettingsAndClose}
+              className="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-500 rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-800 focus:ring-sky-500"
+            >
+              Save Settings & Close
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -9,6 +9,7 @@ import os
 import uuid
 import time
 import Quartz # Added to ensure Quartz namespace is available
+import HIServices # Import HIServices
 from Quartz import CGEventCreateMouseEvent, CGEventPost, kCGEventMouseMoved, kCGEventLeftMouseDown, kCGEventLeftMouseUp, kCGEventRightMouseDown, kCGEventRightMouseUp, kCGEventLeftMouseDragged, kCGMouseButtonLeft, kCGMouseButtonRight, CGEventSetType, CGEventSetIntegerValueField, kCGMouseEventClickState # Removed kCGPointZero
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemMovedEvent
@@ -30,20 +31,191 @@ try:
     APPKIT_LOADED = True
     logger.info("AppKit and Foundation loaded successfully.")
 
-    # Check for Accessibility functions specifically
-    if hasattr(AppKit, 'AXUIElementCreateSystemWide'):
+    # Check for Accessibility functions specifically, prioritizing HIServices
+    if hasattr(HIServices, 'AXUIElementCreateSystemWide'):
         AX_FEATURES_ENABLED = True
-        logger.info("AXUIElementCreateSystemWide found. macOS Accessibility features enabled.")
+        logger.info("AXUIElementCreateSystemWide found via HIServices. macOS Accessibility features enabled.")
+    elif hasattr(AppKit, 'AXUIElementCreateSystemWide'): # Fallback, less likely to work based on findings
+        AX_FEATURES_ENABLED = True
+        logger.info("AXUIElementCreateSystemWide found via AppKit (fallback). macOS Accessibility features enabled.")
     else:
-        logger.warning("AXUIElementCreateSystemWide NOT found via AppKit. Advanced Accessibility features may fail.")
+        logger.warning("AXUIElementCreateSystemWide NOT found via HIServices or AppKit. Advanced Accessibility features may fail.")
     MACOS_FEATURES_ENABLED = True # If AppKit loaded, basic macOS features are enabled
+    logger.info(f"Final status of AX_FEATURES_ENABLED: {AX_FEATURES_ENABLED}") # Added log for final status
 
 except ImportError as e:
-    logger.warning(f"Critical macOS frameworks (AppKit, Foundation) not found: {e}. All macOS-specific features will be disabled.")
+    logger.warning(f"Critical macOS frameworks (AppKit, Foundation, or HIServices) not found: {e}. macOS-specific features may be limited or disabled.")
     MACOS_FEATURES_ENABLED = False
     APPKIT_LOADED = False
     AX_FEATURES_ENABLED = False
 
+
+# --- Helper functions for macOS interaction ---
+
+def _execute_applescript(script_string: str) -> tuple[bool, str | None]:
+    """Helper function to execute an AppleScript string."""
+    try:
+        logger.info(f"Executing AppleScript: {script_string[:150]}...")
+        result = subprocess.run(["osascript", "-e", script_string], capture_output=True, text=True, check=False, timeout=15)
+        if result.returncode == 0:
+            # stdout might contain results from the script, like tab ID, etc.
+            logger.info(f"AppleScript executed successfully. Output: {result.stdout.strip() if result.stdout else 'None'}")
+            return True, result.stdout.strip() if result.stdout else None
+        else:
+            error_message = f"AppleScript failed with code {result.returncode}: {result.stderr.strip() if result.stderr else result.stdout.strip() if result.stdout else 'Unknown osascript error'}"
+            logger.error(error_message)
+            return False, error_message
+    except subprocess.TimeoutExpired:
+        logger.error("AppleScript execution timed out.")
+        return False, "AppleScript execution timed out after 15 seconds."
+    except Exception as e:
+        logger.error(f"Exception during AppleScript execution: {e}", exc_info=True)
+        return False, str(e)
+
+def run_command_in_new_terminal_tab(command_to_run: str, tab_name: str = None, activate_terminal: bool = True) -> tuple[bool, str | None]:
+    """Runs a command in a new Terminal.app tab, optionally naming it."""
+    script_parts = []
+    if activate_terminal:
+        script_parts.append('tell application "Terminal" to activate')
+    
+    script_parts.append('tell application "System Events" to tell process "Terminal" to keystroke "t" using command down')
+    script_parts.append('delay 0.5') # Give time for new tab to open and become active
+    
+    # It's more reliable to do the command in the new tab after it's created.
+    # Setting tab name needs to happen in the context of the new tab.
+    # AppleScript's `do script` opens a new window by default if Terminal is not frontmost or no window is open.
+    # The keystroke "t" using command down is more reliable for creating a tab in the current window.
+
+    # Script to execute command in the newly created (and supposedly frontmost) tab.
+    # Sanitize the command for AppleScript string
+    sanitized_command = command_to_run.replace('\\', '\\\\').replace('"', '\\"')
+    script_parts.append(f'tell application "Terminal" to do script "{sanitized_command}" in selected tab of front window')
+
+    if tab_name:
+        sanitized_tab_name = tab_name.replace('\\', '\\\\').replace('"', '\\"')
+        # Set name of current tab (should be the new one)
+        script_parts.append(f'tell application "Terminal" to set custom title of selected tab of front window to "{sanitized_tab_name}"')
+
+    full_script = "\n".join(script_parts)
+    # Add to history (command_type: 'applescript_terminal', details: {command_to_run, tab_name})
+    command_details_for_history = {"command_type": "applescript_terminal_new_tab", "command": command_to_run, "tab_name": tab_name, "full_script_approx": full_script[:200]}
+    hook_executed_command_history.append((command_details_for_history, time.time()))
+    return _execute_applescript(full_script)
+
+def quit_application_applescript(bundle_id: str):
+    """Gracefully quits an application using its bundle ID via AppleScript."""
+    if not bundle_id:
+        return False, "Bundle ID is required to quit an application."
+    
+    # Basic sanitation for bundle_id (AppleScript is generally okay with typical bundle_id chars)
+    # but ensure no quotes break the script string.
+    sanitized_bundle_id = bundle_id.replace('\\"', '\\\\\\"').replace("'", "\\\\'") # Escape double and single quotes
+
+    applescript_command = f'tell application id "{sanitized_bundle_id}" to quit'
+    logger.info(f"Preparing AppleScript to quit application id: {sanitized_bundle_id}")
+
+    try:
+        # Using subprocess.run directly similar to simulate_keystrokes_applescript
+        result = subprocess.run(["osascript", "-e", applescript_command], capture_output=True, text=True, check=False, timeout=10) # 10s timeout
+        
+        if result.returncode == 0:
+            logger.info(f"AppleScript command to quit '{sanitized_bundle_id}' executed successfully.")
+            # Add to history
+            history_entry = {
+                "command_type": "quit_application_applescript",
+                "bundle_id": sanitized_bundle_id,
+                "status": "success"
+            }
+            hook_executed_command_history.append((history_entry, time.time()))
+            return True, None
+        else:
+            error_message = f"AppleScript to quit '{sanitized_bundle_id}' failed. Return code: {result.returncode}. Stderr: {result.stderr.strip() if result.stderr else result.stdout.strip() if result.stdout else 'Unknown osascript error'}"
+            logger.error(error_message)
+            history_entry = {
+                "command_type": "quit_application_applescript",
+                "bundle_id": sanitized_bundle_id,
+                "status": "error",
+                "error_message": error_message
+            }
+            hook_executed_command_history.append((history_entry, time.time()))
+            return False, error_message
+    except subprocess.TimeoutExpired:
+        error_message = f"AppleScript command to quit '{sanitized_bundle_id}' timed out after 10 seconds."
+        logger.error(error_message)
+        history_entry = {
+            "command_type": "quit_application_applescript",
+            "bundle_id": sanitized_bundle_id,
+            "status": "error",
+            "error_message": error_message
+        }
+        hook_executed_command_history.append((history_entry, time.time()))
+        return False, error_message
+    except Exception as e:
+        error_message = f"Exception during AppleScript execution for quitting '{sanitized_bundle_id}': {e}"
+        logger.error(error_message, exc_info=True)
+        history_entry = {
+            "command_type": "quit_application_applescript",
+            "bundle_id": sanitized_bundle_id,
+            "status": "error",
+            "error_message": str(e)
+        }
+        hook_executed_command_history.append((history_entry, time.time()))
+        return False, str(e)
+
+
+# Global helper function for Accessibility
+AX_API_DISABLED_ERROR_MSG = "Accessibility API is disabled (AXErrorAPIDisabled -25201). Please check System Settings > Privacy & Security > Accessibility. Ensure the application that launched this Python script (e.g., Terminal, your IDE like VS Code/Cursor, or the specific Python interpreter if run directly) has permissions. You may need to add the exact Python executable (e.g., /usr/bin/python3, /opt/homebrew/bin/python3.12, or the one inside your .venv) to the list."
+
+def _find_ax_element_recursive(current_element, identifier_text, target_role):
+    """
+    Recursively searches for an AXUIElement starting from current_element.
+    Matches based on identifier_text (in title or description) and target_role.
+    Returns the AXUIElement if found, otherwise None.
+    """
+    if not current_element:
+        return None
+
+    # Check current element
+    error_ref = objc.NULL # For AXUIElementCopyAttributeValue, error is typically in return code for HIServices
+    
+    # Using string literals for AX Attributes
+    role_ref, err_role = HIServices.AXUIElementCopyAttributeValue(current_element, "AXRole", error_ref) # kAXRoleAttribute
+    
+    # If target_role is specified, check it
+    if target_role and (err_role != 0 or role_ref != target_role): # err_role is 0 on success
+        pass # Role doesn't match or error getting role, so this element isn't it (unless we are not filtering by role)
+    else: # Role matches, or we are not filtering by role. Now check identifier.
+        title_ref, err_title = HIServices.AXUIElementCopyAttributeValue(current_element, "AXTitle", error_ref) # kAXTitleAttribute
+        description_ref, err_desc = HIServices.AXUIElementCopyAttributeValue(current_element, "AXDescription", error_ref) # kAXDescriptionAttribute
+        
+        # Check title (if exists and no error)
+        if err_title == 0 and title_ref and isinstance(title_ref, str) and identifier_text.lower() in title_ref.lower():
+            logger.debug(f"Found AXElement by title: '{title_ref}' matching '{identifier_text}' with role '{role_ref or 'Any'}'")
+            return current_element
+        
+        # Check description (if exists and no error)
+        if err_desc == 0 and description_ref and isinstance(description_ref, str) and identifier_text.lower() in description_ref.lower():
+            logger.debug(f"Found AXElement by description: '{description_ref}' matching '{identifier_text}' with role '{role_ref or 'Any'}'")
+            return current_element
+
+    # If not found in current element, search children
+    # Using string literals for AX Attributes
+    children_ref, err_children = HIServices.AXUIElementCopyAttributeValue(current_element, "AXChildren", error_ref) # kAXChildrenAttribute
+    if err_children == 0 and children_ref:
+        # children_ref might be a list of AXUIElementRef objects
+        if isinstance(children_ref, list):
+            for child_element_ref in children_ref:
+                if child_element_ref: # Ensure child element is not None
+                    found_element = _find_ax_element_recursive(child_element_ref, identifier_text, target_role)
+                    if found_element:
+                        return found_element
+        # Add handling if children_ref is a single element, though typically it's a list or None
+        elif children_ref: # A single child AXUIElementRef
+             found_element = _find_ax_element_recursive(children_ref, identifier_text, target_role)
+             if found_element:
+                return found_element
+    
+    return None 
 
 # --- Local Context History Cache (Hook-Side) ---
 MAX_HISTORY_ITEMS = 10 # Max items for each history deque
@@ -259,18 +431,27 @@ def simulate_keystrokes_applescript(text_to_type: str, press_enter: bool = False
     """Simulates keystrokes using AppleScript, optionally pressing Enter."""
     try:
         sanitized_text = text_to_type.replace("\\", "\\\\").replace('"', '\\"')
-        applescript_command = f'tell application "System Events" to keystroke "{sanitized_text}"'
+        
+        script_lines = []
+        script_lines.append(f'tell application "System Events"')
+        script_lines.append(f'    keystroke "{sanitized_text}"')
         if press_enter:
-            applescript_command += '\nkeystroke return'
+            script_lines.append(f'    keystroke return')
+        script_lines.append(f'end tell')
+        
+        applescript_command_full = "\n".join(script_lines)
 
-        logger.info(f"Executing AppleScript for keystrokes: osascript -e '{applescript_command[:100]}...'")
-        result = subprocess.run(["osascript", "-e", applescript_command], capture_output=True, text=True, check=False)
+        logger.info(f"Executing AppleScript for keystrokes: osascript -e '{applescript_command_full.splitlines()[1].strip()}...'") # Log first actual command
+        
+        # For osascript, each -e is a new line, or pass the whole script as one argument.
+        # Passing as a single block is generally fine if newlines are correctly embedded.
+        result = subprocess.run(["osascript", "-e", applescript_command_full], capture_output=True, text=True, check=False)
         
         if result.returncode == 0:
             logger.info("Keystroke simulation successful.")
             return True, None
         else:
-            error_message = f"AppleScript keystroke command failed with code {result.returncode}: {result.stderr.strip()}"
+            error_message = f"AppleScript keystroke command failed with code {result.returncode}: {result.stderr.strip() if result.stderr else result.stdout.strip()}"
             logger.error(error_message)
             return False, error_message
     except Exception as e:
@@ -283,39 +464,120 @@ def get_focused_input_text():
         return None, "macOS Accessibility features are disabled or AXUIElementCreateSystemWide is not available."
 
     try:
-        system_element = AppKit.AXUIElementCreateSystemWide()
-        focused_element_ref = system_element.attributeValue_("AXFocusedUIElement")
+        # Prioritize HIServices for creating the system-wide element
+        system_element = None
+        system_element_is_raw_ref = False # Flag to track if it's a raw ref
+
+        if hasattr(HIServices, 'AXUIElementCreateSystemWide'):
+            system_element = HIServices.AXUIElementCreateSystemWide()
+            logger.debug("Using HIServices.AXUIElementCreateSystemWide for get_focused_input_text")
+            system_element_is_raw_ref = True # This is a raw AXUIElementRef
+        elif hasattr(AppKit, 'AXUIElementCreateSystemWide'): # Fallback
+            system_element = AppKit.AXUIElementCreateSystemWide()
+            logger.debug("Using AppKit.AXUIElementCreateSystemWide (fallback) for get_focused_input_text")
+            # AppKit's version typically returns a rich PyObjC object
+        else:
+            return None, "AXUIElementCreateSystemWide not found in HIServices or AppKit."
+        
+        if not system_element:
+             return None, "Failed to create AXUIElementCreateSystemWide via any method."
+
+        focused_element_ref = None
+
+        if system_element_is_raw_ref:
+            # PyObjC wraps AXUIElementCopyAttributeValue to return (err_code, valueOut)
+            # It expects 3 arguments: element, attributeName, and a placeholder for the output value (e.g., objc.NULL)
+            err_code, focused_element_ref = HIServices.AXUIElementCopyAttributeValue(system_element, "AXFocusedUIElement", objc.NULL)
+
+            if err_code != 0: # AppKit.kAXErrorSuccess:
+                logger.warning(f"HIServices.AXUIElementCopyAttributeValue failed for 'AXFocusedUIElement'. Error code: {err_code}")
+                specific_error = AX_API_DISABLED_ERROR_MSG if err_code == -25201 else f"Error getting focused element. AX Error Code: {err_code}"
+                return None, specific_error
+            
+            if focused_element_ref is None and err_code == 0: # AppKit.kAXErrorSuccess:
+                 logger.info("AXUIElementCopyAttributeValue for 'AXFocusedUIElement' returned success but no element.")
+                 return None, "No focused UI element (API returned success but no element)."
+        else:
+            # If system_element is from AppKit, assume it's a rich object
+            focused_element_ref = system_element.attributeValue_("AXFocusedUIElement")
 
         if focused_element_ref is None:
-            logger.info("No focused UI element found.")
+            logger.info("No focused UI element found (ref is None).")
             return None, "No focused UI element."
         
-        focused_element = focused_element_ref
+        # focused_element_ref can now be a raw AXUIElementRef or a rich PyObjC object.
+        # We need to handle these two cases differently when trying to get AXValue.
 
-        # Check if AXValue is a valid attribute for the focused element
-        # Some elements might not have AXValue but other ways to get text (e.g. AXDescription)
-        # For now, focusing on AXValue as it's most common for input fields.
-        if focused_element.attributeIsSettable_("AXValue") or focused_element.attributeNames().containsObject_("AXValue"):
-            value = focused_element.attributeValue_("AXValue")
-            if value is not None:
-                logger.debug(f"Focused element raw value type: {type(value)}, value: {str(value)[:100]}")
-                if isinstance(value, str):
-                    return str(value), None
-                elif APPKIT_LOADED and isinstance(value, AppKit.NSAttributedString):
-                    return str(value.string()), None 
-                elif APPKIT_LOADED and isinstance(value, Foundation.NSObject) and hasattr(value, 'description'):
-                    # Fallback for some custom objects that might return their text via description
-                    return str(value.description()), None
+        value_str = None
+        error_getting_value = None
+
+        if system_element_is_raw_ref: # We have a raw AXUIElementRef in focused_element_ref
+            logger.debug("Trying to get AXValue from raw AXUIElementRef")
+            # Corrected call with 3 arguments
+            err_val, ax_value = HIServices.AXUIElementCopyAttributeValue(focused_element_ref, "AXValue", objc.NULL)
+            if err_val == 0: # AppKit.kAXErrorSuccess:
+                if ax_value is not None:
+                    logger.debug(f"Raw AXValue type: {type(ax_value)}, value: {str(ax_value)[:100]}")
+                    if isinstance(ax_value, str):
+                        value_str = ax_value
+                    # NSAttributedString might also be returned by HIServices path, needs Foundation for class check
+                    elif APPKIT_LOADED and Foundation and isinstance(ax_value, Foundation.NSAttributedString): # Check Foundation is loaded
+                         value_str = str(ax_value.string())
+                    elif APPKIT_LOADED and Foundation and isinstance(ax_value, Foundation.NSObject) and hasattr(ax_value, 'description'): # Check Foundation is loaded
+                        value_str = str(ax_value.description())
+                    else:
+                        error_getting_value = f"Focused element raw AXValue type not directly string: {type(ax_value)}"
                 else:
-                    logger.info(f"Focused element value is not a direct string or common NSObject derivative: {type(value)}")
-                    return None, f"Focused element value type not directly string: {type(value)}"
+                    error_getting_value = "Focused element has AXValue (raw path), but it is None."
             else:
-                logger.info("Focused element has AXValue attribute, but current value is None.")
-                return None, "Focused element has AXValue, but it is None."
+                # Error kAXErrorAttributeUnsupported is common if element doesn't have AXValue
+                if err_val == -25205: # AppKit.kAXErrorAttributeUnsupported:
+                    error_getting_value = "Focused element does not support AXValue attribute (raw path)."
+                else:
+                    specific_error = AX_API_DISABLED_ERROR_MSG if err_val == -25201 else f"Error getting AXValue from raw ref. AX Error Code: {err_val}"
+                    error_getting_value = specific_error
+        
+        elif APPKIT_LOADED: # We have a rich PyObjC object in focused_element_ref (from AppKit.AXUIElementCreateSystemWide)
+            logger.debug("Trying to get AXValue from rich PyObjC AXUIElement")
+            focused_element_rich = focused_element_ref # It's already a rich object
+            # Check if AXValue is a valid attribute for the focused element
+            # Some elements might not have AXValue but other ways to get text (e.g. AXDescription)
+            # For now, focusing on AXValue as it's most common for input fields.
+            
+            # Before calling attributeIsSettable_ or attributeNames, ensure focused_element_rich is not None
+            # and is a PyObjC object that would respond to these messages.
+            # The check for focused_element_ref is None already happened.
+            
+            # Check existence of AXValue attribute before trying to get it
+            # This is a bit tricky because there's no direct "hasAttribute" for raw refs easily.
+            # For rich objects, attributeNames() is one way.
+            attribute_names = focused_element_rich.attributeNames()
+            if attribute_names is not None and "AXValue" in attribute_names:
+                ax_value = focused_element_rich.attributeValue_("AXValue")
+                if ax_value is not None:
+                    logger.debug(f"Rich AXValue type: {type(ax_value)}, value: {str(ax_value)[:100]}")
+                    if isinstance(ax_value, str):
+                        value_str = str(ax_value)
+                    elif APPKIT_LOADED and isinstance(ax_value, AppKit.NSAttributedString):
+                        value_str = str(ax_value.string()) 
+                    elif APPKIT_LOADED and Foundation and isinstance(ax_value, Foundation.NSObject) and hasattr(ax_value, 'description'):
+                        # Fallback for some custom objects that might return their text via description
+                        value_str = str(ax_value.description())
+                    else:
+                        error_getting_value = f"Focused element rich AXValue type not directly string: {type(ax_value)}"
+                else:
+                    error_getting_value = "Focused element has AXValue attribute (rich path), but current value is None."
+            else:
+                error_getting_value = "Focused element does not have an AXValue attribute (rich path)."
+        else: # Should not happen if APPKIT_LOADED is false and system_element_is_raw_ref is false
+            error_getting_value = "Cannot determine how to get AXValue due to unexpected state."
+
+
+        if value_str is not None:
+            return value_str, None
         else:
-            logger.info("Focused element does not have an AXValue attribute.")
-            # Consider checking for AXDescription or other attributes as a fallback here if needed in future.
-            return None, "Focused element does not have AXValue attribute."
+            logger.info(error_getting_value or "Could not retrieve focused text for unknown reasons.")
+            return None, error_getting_value or "Could not retrieve focused text."
 
     except Exception as e:
         logger.error(f"Error getting focused input text via Accessibility: {e}", exc_info=True)
@@ -341,27 +603,37 @@ def get_focused_input_text():
 def execute_shell_command_sync(command_string: str):
     """Executes a shell command synchronously and captures its output."""
     logger.info(f"Executing shell command: {command_string}")
+    stdout_val = None
+    stderr_val = None
+    error_msg = None # Initialize error_msg
+    success = False
     try:
-        # Using shell=True can be a security risk if command_string comes from an untrusted source.
-        # For personal use where commands originate from trusted user input in the app, it's more flexible.
-        # Consider splitting command_string into a list if shell=False is preferred for safety.
         result = subprocess.run(command_string, shell=True, capture_output=True, text=True, timeout=30) # 30s timeout
+        stdout_val = result.stdout
+        stderr_val = result.stderr
         if result.returncode == 0:
-            logger.info(f"Shell command successful. stdout: {result.stdout[:100]}...")
-            return True, result.stdout, result.stderr
+            logger.info(f"Shell command successful. stdout: {stdout_val[:100]}...")
+            success = True
         else:
-            logger.warning(f"Shell command failed with code {result.returncode}. stderr: {result.stderr[:100]}... stdout: {result.stdout[:100]}...")
-            return False, result.stdout, result.stderr # Return stdout even on failure, it might contain info
+            logger.warning(f"Shell command failed with code {result.returncode}. stderr: {stderr_val[:100]}... stdout: {stdout_val[:100]}...")
+            # error_msg is implicitly None here, or could be stderr_val if preferred as primary error
+            error_msg = stderr_val # Assign stderr to error_msg on failure
+            success = False
     except subprocess.TimeoutExpired:
         logger.error(f"Shell command timed out: {command_string}")
-        return False, None, "Command timed out after 30 seconds."
+        error_msg = "Command timed out after 30 seconds."
+        success = False
+        # stdout_val and stderr_val remain None
     except Exception as e:
         logger.error(f"Exception executing shell command '{command_string}': {e}", exc_info=True)
-        return False, None, None, str(e) # Ensure four values are returned
+        error_msg = str(e)
+        success = False
+        # stdout_val and stderr_val remain None
     finally:
-        # Add to history regardless of success/failure, as an attempt was made
         command_details_for_history = {"command_type": "shell_sync", "command": command_string} 
         hook_executed_command_history.append((command_details_for_history, time.time()))
+    
+    return success, stdout_val, stderr_val, error_msg
 
 def move_mouse_to(x: int, y: int):
     try:
@@ -418,56 +690,6 @@ def perform_mouse_click(x: int, y: int, button: str = "left", click_type: str = 
         logger.error(f"Error performing mouse click: {str(e)}")
         return False, str(e)
 
-def _execute_applescript(script_string: str) -> tuple[bool, str | None]:
-    """Helper function to execute an AppleScript string."""
-    try:
-        logger.info(f"Executing AppleScript: {script_string[:150]}...")
-        result = subprocess.run(["osascript", "-e", script_string], capture_output=True, text=True, check=False, timeout=15)
-        if result.returncode == 0:
-            # stdout might contain results from the script, like tab ID, etc.
-            logger.info(f"AppleScript executed successfully. Output: {result.stdout.strip() if result.stdout else 'None'}")
-            return True, result.stdout.strip() if result.stdout else None
-        else:
-            error_message = f"AppleScript failed with code {result.returncode}: {result.stderr.strip() if result.stderr else result.stdout.strip() if result.stdout else 'Unknown osascript error'}"
-            logger.error(error_message)
-            return False, error_message
-    except subprocess.TimeoutExpired:
-        logger.error("AppleScript execution timed out.")
-        return False, "AppleScript execution timed out after 15 seconds."
-    except Exception as e:
-        logger.error(f"Exception during AppleScript execution: {e}", exc_info=True)
-        return False, str(e)
-
-def run_command_in_new_terminal_tab(command_to_run: str, tab_name: str = None, activate_terminal: bool = True) -> tuple[bool, str | None]:
-    """Runs a command in a new Terminal.app tab, optionally naming it."""
-    script_parts = []
-    if activate_terminal:
-        script_parts.append('tell application "Terminal" to activate')
-    
-    script_parts.append('tell application "System Events" to tell process "Terminal" to keystroke "t" using command down')
-    script_parts.append('delay 0.5') # Give time for new tab to open and become active
-    
-    # It's more reliable to do the command in the new tab after it's created.
-    # Setting tab name needs to happen in the context of the new tab.
-    # AppleScript's `do script` opens a new window by default if Terminal is not frontmost or no window is open.
-    # The keystroke "t" using command down is more reliable for creating a tab in the current window.
-
-    # Script to execute command in the newly created (and supposedly frontmost) tab.
-    # Sanitize the command for AppleScript string
-    sanitized_command = command_to_run.replace("\\", "\\\\").replace("\"", "\\\"")
-    script_parts.append(f'tell application "Terminal" to do script "{sanitized_command}" in selected tab of front window')
-
-    if tab_name:
-        sanitized_tab_name = tab_name.replace("\\", "\\\\").replace("\"", "\\\"")
-        # Set name of current tab (should be the new one)
-        script_parts.append(f'tell application "Terminal" to set custom title of selected tab of front window to "{sanitized_tab_name}"')
-
-    full_script = "\n".join(script_parts)
-    # Add to history (command_type: 'applescript_terminal', details: {command_to_run, tab_name})
-    command_details_for_history = {"command_type": "applescript_terminal_new_tab", "command": command_to_run, "tab_name": tab_name, "full_script_ približno": full_script[:200]}
-    hook_executed_command_history.append((command_details_for_history, time.time()))
-    return _execute_applescript(full_script)
-
 async def handle_message(websocket, message_str):
     """Handles incoming messages from the CTW web app."""
     global global_observer # Allow modification of global_observer
@@ -481,7 +703,7 @@ async def handle_message(websocket, message_str):
 
         logger.info(f"Received command: {command} with id: {message_id} from {websocket.remote_address}")
 
-        response_data = None
+        response_data = {}
         status = "success"
         error_msg = None
 
@@ -626,15 +848,24 @@ async def handle_message(websocket, message_str):
                             target_app = apps[0]
                             if target_app:
                                 logger.info(f"Attempting to activate {target_app_bundle_id} for click.")
+                                # Bring the app to front and wait for it to become active
                                 if target_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps):
                                     activated_app = True
-                                    logger.info(f"Successfully activated {target_app_bundle_id}.")
-                                    # Wait a very short moment for the app to come to the front
-                                    # This might need adjustment or a more robust way to confirm focus
-                                    time.sleep(0.2) 
+                                    logger.info(f"Successfully activated {target_app_bundle_id}. Waiting for it to become frontmost...")
+                                    # Loop to wait for the app to be frontmost
+                                    # Timeout after a few seconds to avoid an infinite loop
+                                    start_time = time.time()
+                                    while time.time() - start_time < 3: # 3 second timeout
+                                        frontmost_check = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+                                        if frontmost_check and frontmost_check.processIdentifier() == target_app.processIdentifier():
+                                            logger.info(f"{target_app_bundle_id} is now frontmost.")
+                                            break
+                                        time.sleep(0.1) # Check every 100ms
+                                    else:
+                                        logger.warning(f"Timeout waiting for {target_app_bundle_id} to become frontmost.")
+                                        # Even if it times out, proceed, but log the warning
                                 else:
                                     logger.warning(f"Could not activate {target_app_bundle_id} programmatically.")
-                                    # error_msg = f"Could not activate target app {target_app_bundle_id}." # Don't error out yet, try system-wide
                             else:
                                 logger.warning(f"Target app {target_app_bundle_id} not found or not running.")
                                 # error_msg = f"Target app {target_app_bundle_id} not found or not running." # Don't error out
@@ -657,74 +888,81 @@ async def handle_message(websocket, message_str):
                     #    If target_app was activated, use it. Otherwise, get frontmost_app_element.
                     app_element_to_search = None
                     if activated_app and target_app:
-                        # How to get AXUIElement from NSRunningApplication?
-                        # This needs research. pid = target_app.processIdentifier()
-                        # app_element_to_search = AppKit.AXUIElementCreateApplication(target_app.processIdentifier())
-                        # logger.info(f"Searching within activated app: {target_app.localizedName()}")
-                        # For now, we can't directly get AXUIElement from NSRunningApplication easily.
-                        # Fallback to searching in the current frontmost app if specific app was targeted
-                        # This is not ideal but a starting point.
-                        frontmost_app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
-                        if frontmost_app and frontmost_app.bundleIdentifier() == target_app_bundle_id:
-                           app_element_to_search = AppKit.AXUIElementCreateApplication(frontmost_app.processIdentifier())
-                           logger.info(f"Targeted app {target_app_bundle_id} is frontmost. Searching within it.")
+                        pid = target_app.processIdentifier()
+                        if hasattr(HIServices, 'AXUIElementCreateApplication'):
+                            app_element_to_search = HIServices.AXUIElementCreateApplication(pid)
+                            logger.info(f"Searching within activated app (via HIServices): {target_app.localizedName() or target_app_bundle_id}")
+                        elif hasattr(AppKit, 'AXUIElementCreateApplication'): # Fallback
+                            app_element_to_search = AppKit.AXUIElementCreateApplication(pid)
+                            logger.info(f"Searching within activated app (via AppKit fallback): {target_app.localizedName() or target_app_bundle_id}")
                         else:
-                           logger.warning(f"Targeted app {target_app_bundle_id} was activated but is not frontmost. Click might be unreliable. Current frontmost: {frontmost_app.bundleIdentifier() if frontmost_app else 'None'}")
-                           # If we can't guarantee the target app is focused for AX search, this will be very unreliable.
-                           # For now, we'll let it proceed and it will search in whatever is truly frontmost.
-                           # This part needs significant improvement for reliability.
-                           system_wide_element = AppKit.AXUIElementCreateSystemWide()
-                           error_ref = objc.nullptr # For AXUIElementCopyAttributeValue
-                           focused_app_ax_element_ref, err_focused_app_ax = system_wide_element.AXUIElementCopyAttributeValue(AppKit.kAXFocusedApplicationAttribute, error_ref)
-                           if err_focused_app_ax or not focused_app_ax_element_ref:
-                               pass # Error handled below
-                           else:
-                               app_element_to_search = focused_app_ax_element_ref # This is actually the AXUIElement of focused app
+                            logger.warning("AXUIElementCreateApplication not found in HIServices or AppKit for targeted search.")
 
+                        # Ensure target app is still frontmost if we are to search within it (redundant if wait loop above worked, but good check)
+                        frontmost_app_check = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+                        if not (frontmost_app_check and frontmost_app_check.processIdentifier() == pid):
+                            logger.warning(f"Targeted app {target_app_bundle_id} was targeted but is no longer frontmost. Search within it might be unreliable. Current frontmost: {frontmost_app_check.bundleIdentifier() if frontmost_app_check else 'None'}.")
+                            # Do not clear app_element_to_search here, still attempt to search within the targeted app's element we obtained.
+                            
                     if not app_element_to_search:
-                        # Fallback to system-wide focused application if no target or activation failed/unclear
-                        logger.info("No specific app targeted or activated for click, or target not frontmost. Getting system-wide focused application.")
-                        system_wide_element = AppKit.AXUIElementCreateSystemWide()
-                        error_ref = objc.nullptr 
-                        focused_app_ax_element_ref, err_focused_app_ax = system_wide_element.AXUIElementCopyAttributeValue(AppKit.kAXFocusedApplicationAttribute, error_ref)
-                        if err_focused_app_ax or not focused_app_ax_element_ref:
-                            error_msg = "Could not get focused application to search for the button."
-                            logger.error(error_msg)
+                        logger.info("Falling back to system-wide focused application for button search (app_element_to_search was not set).")
+                        system_wide_element = None
+                        system_wide_element_is_raw_ref = False
+
+                        if hasattr(HIServices, 'AXUIElementCreateSystemWide'):
+                            system_wide_element = HIServices.AXUIElementCreateSystemWide()
+                            system_wide_element_is_raw_ref = True
+                        elif hasattr(AppKit, 'AXUIElementCreateSystemWide'): # Fallback
+                            system_wide_element = AppKit.AXUIElementCreateSystemWide()
+                        
+                        if system_wide_element:
+                            focused_app_ax_element_ref = None
+                            if system_wide_element_is_raw_ref:
+                                # PyObjC wraps AXUIElementCopyAttributeValue to return (err_code, valueOut)
+                                # It expects 3 arguments: element, attributeName, and a placeholder for the output value (e.g., objc.NULL)
+                                err_focused_app_ax, focused_app_ax_element_ref = HIServices.AXUIElementCopyAttributeValue(system_wide_element, "AXFocusedApplication", objc.NULL)
+                                
+                                if err_focused_app_ax != 0: # AppKit.kAXErrorSuccess:
+                                    error_msg = AX_API_DISABLED_ERROR_MSG if err_focused_app_ax == -25201 else f"HIServices.AXUIElementCopyAttributeValue failed for 'AXFocusedApplication'. Error code: {err_focused_app_ax}"
+                                    logger.error(error_msg)
+                                # focused_app_ax_element_ref is the value if successful
+                            else: # AppKit path, assume rich object
+                                focused_app_ax_element_ref = system_wide_element.attributeValue_(AppKit.kAXFocusedApplicationAttribute)
+                            
+                            if focused_app_ax_element_ref:
+                                app_element_to_search = focused_app_ax_element_ref
+                            elif not error_msg: # If no error_msg set but still no ref
+                                error_msg = "Could not get focused application to search for the button (system-wide)."
+                                logger.error(error_msg)
                         else:
-                            app_element_to_search = focused_app_ax_element_ref # This is the AXUIElement of the focused app itself
-                            # app_name_ref, _ = app_element_to_search.AXUIElementCopyAttributeValue(AppKit.kAXTitleAttribute, error_ref) # Get its name for logging
-                            # logger.info(f"Searching for button in focused app: {app_name_ref or 'Unknown'}")
+                            error_msg = "AXUIElementCreateSystemWide not found; cannot get focused application for button search."
                             
                     if app_element_to_search and not error_msg:
-                        # 2. Recursively search for the button within the application element
-                        #    This would involve traversing the accessibility hierarchy.
-                        #    Looking for elements with kAXRoleAttribute = kAXButtonRole
-                        #    And kAXTitleAttribute or kAXDescriptionAttribute matching button_identifier (case-insensitively)
-                        
                         button_to_click = _find_ax_element_recursive(
                             app_element_to_search,
                             button_identifier,
-                            AppKit.kAXButtonRole
+                            "AXButton" # kAXButtonRole
                         )
 
                         if button_to_click:
                             logger.info(f"Found button '{button_identifier}'. Attempting to click.")
                             # Before clicking, ensure the element is enabled
-                            is_enabled_ref, err_enabled = button_to_click.AXUIElementCopyAttributeValue(AppKit.kAXEnabledAttribute, objc.nullptr)
-                            if err_enabled: # Error checking enabled status
-                                error_msg = f"Could not determine if button '{button_identifier}' is enabled (Error: {err_enabled}). Click aborted."
+                            # Using string literals for AX Attributes
+                            is_enabled_ref, err_enabled = HIServices.AXUIElementCopyAttributeValue(button_to_click, "AXEnabled", objc.NULL) # kAXEnabledAttribute
+                            if err_enabled != 0: # Error checking enabled status
+                                error_msg = AX_API_DISABLED_ERROR_MSG if err_enabled == -25201 else f"Could not determine if button '{button_identifier}' is enabled (Error: {err_enabled}). Click aborted."
                                 logger.error(error_msg)
                             elif not is_enabled_ref: # Explicitly False
                                 error_msg = f"Button '{button_identifier}' was found but is disabled. Click aborted."
                                 logger.warning(error_msg)
                             else: # Is enabled or attribute not present (assume enabled)
-                                err_press = button_to_click.AXUIElementPerformAction(AppKit.kAXPressAction)
-                                if err_press == AppKit.kAXErrorSuccess:
+                                err_press = button_to_click.AXUIElementPerformAction("AXPress") # kAXPressAction (Was AppKit.kAXPressAction)
+                                if err_press == 0: # AppKit.kAXErrorSuccess:
                                     clicked_successfully = True
                                     logger.info(f"Successfully performed kAXPressAction on button '{button_identifier}'.")
                                     response_data["message"] = f"Successfully clicked button '{button_identifier}'."
                                 else:
-                                    error_msg = f"Found button '{button_identifier}' but failed to perform press action (Error code: {err_press})."
+                                    error_msg = AX_API_DISABLED_ERROR_MSG if err_press == -25201 else f"Found button '{button_identifier}' but failed to perform press action (Error code: {err_press})."
                                     logger.error(error_msg)
                         else:
                             error_msg = f"Button with identifier '{button_identifier}' and role 'AXButton' not found within the application."
@@ -743,18 +981,26 @@ async def handle_message(websocket, message_str):
 
             if status == "success":
                 response = create_response(message_id, command, payload, status, response_data)
+            # For click_button_in_target, response is created here or error handled by centralized logic
+            # Ensure error_msg is passed if status is "error"
+            elif status == "error" and not response_data.get("error_message"):
+                 # This branch will be handled by the centralized error response creation later
+                 pass
 
         elif command == "execute_shell_command":
             shell_command_to_run = payload.get("command")
             if shell_command_to_run:
-                success, stdout, stderr, error_msg = execute_shell_command_sync(shell_command_to_run)
-                response_payload = {
+                success, stdout_val, stderr_val, error_msg_shell = execute_shell_command_sync(shell_command_to_run)
+                response_data = { # Populate response_data for consistency
                     "success": success,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "error_message": error_msg
+                    "stdout": stdout_val,
+                    "stderr": stderr_val,
+                    "error_message": error_msg_shell
                 }
-                response = {"id": message_id, "type": f"{command}_response", "status": "success" if success else "error", "payload": response_payload, "error_message": error_msg if not success else None}
+                if not success:
+                    status = "error"
+                    # error_msg is already part of response_data, but create_response also takes it
+                    error_msg = error_msg_shell or "Shell command failed"
             else:
                 status = "error"
                 error_msg = "No command provided in payload"
@@ -980,9 +1226,16 @@ async def handle_message(websocket, message_str):
             status = "error"
             error_msg = f"Unknown command: {command}"
 
-        response = create_response(message_id, command, payload, status, response_data)
-        await websocket.send(json.dumps(response))
-        logger.info(f"Sent response for command: {command} with id: {message_id} to {websocket.remote_address}")
+        # Centralized response building for commands that don't send their own response
+        if command not in ["ping"]: # ping sends its own response and returns
+            if status == "error" and error_msg:
+                # Ensure the error message is part of the response_data's payload if not already.
+                if "error_message" not in response_data:
+                    response_data["error_message"] = error_msg
+            
+            response_to_send = create_response(message_id, command, payload, status, response_data)
+            await websocket.send(json.dumps(response_to_send))
+            logger.info(f"Sent response for command: {command} with id: {message_id} to {websocket.remote_address}")
 
     except json.JSONDecodeError:
         logger.error("Failed to decode JSON message from client.")
@@ -1022,13 +1275,19 @@ async def unregister(websocket):
 async def main():
     """Starts the WebSocket server."""
     global global_observer
+    import sys # Import sys here
+    print(f"NATIVE HOOK INFO: Python executable is: {sys.executable}") # Log the executable
     loop = asyncio.get_running_loop() # Get current loop for the event handler
 
     host = "localhost"
     port = 8765
 
-    async with websockets.serve(register, host, port, ping_interval=20, ping_timeout=20):
-        logger.info(f"Python Hook WebSocket server started on ws://{host}:{port}")
+    # Increase max_size to accommodate potentially large screen capture data (e.g., 5MB)
+    # Default is 1MB (1024*1024 bytes)
+    max_websocket_message_size = 5 * 1024 * 1024 
+
+    async with websockets.serve(register, host, port, ping_interval=20, ping_timeout=20, max_size=max_websocket_message_size):
+        logger.info(f"Python Hook WebSocket server started on ws://{host}:{port} with max_size={max_websocket_message_size} bytes")
         await asyncio.Future()  # Run forever
 
 if __name__ == "__main__":
@@ -1066,105 +1325,3 @@ if __name__ == "__main__":
 #   "status": "error",
 #   "error_message": "Details about the error"
 # } 
-
-# Global helper function for Accessibility
-def _find_ax_element_recursive(current_element, identifier_text, target_role):
-    """
-    Recursively searches for an AXUIElement starting from current_element.
-    Matches based on identifier_text (in title or description) and target_role.
-    Returns the AXUIElement if found, otherwise None.
-    """
-    if not current_element:
-        return None
-
-    # Check current element
-    error_ref = objc.nullptr 
-    
-    role_ref, err_role = current_element.AXUIElementCopyAttributeValue(AppKit.kAXRoleAttribute, error_ref)
-    
-    # If target_role is specified, check it
-    if target_role and (err_role or role_ref != target_role):
-        pass # Role doesn't match or error getting role, so this element isn't it (unless we are not filtering by role)
-    else: # Role matches, or we are not filtering by role. Now check identifier.
-        title_ref, err_title = current_element.AXUIElementCopyAttributeValue(AppKit.kAXTitleAttribute, error_ref)
-        description_ref, err_desc = current_element.AXUIElementCopyAttributeValue(AppKit.kAXDescriptionAttribute, error_ref)
-        
-        # Check title (if exists and no error)
-        if not err_title and title_ref and isinstance(title_ref, str) and identifier_text.lower() in title_ref.lower():
-            logger.debug(f"Found AXElement by title: '{title_ref}' matching '{identifier_text}' with role '{role_ref or 'Any'}'")
-            return current_element
-        
-        # Check description (if exists and no error)
-        if not err_desc and description_ref and isinstance(description_ref, str) and identifier_text.lower() in description_ref.lower():
-            logger.debug(f"Found AXElement by description: '{description_ref}' matching '{identifier_text}' with role '{role_ref or 'Any'}'")
-            return current_element
-
-    # If not found in current element, search children
-    children_ref, err_children = current_element.AXUIElementCopyAttributeValue(AppKit.kAXChildrenAttribute, error_ref)
-    if not err_children and children_ref:
-        for child in children_ref:
-            found_element = _find_ax_element_recursive(child, identifier_text, target_role)
-            if found_element:
-                return found_element
-    
-    return None 
-
-def quit_application_applescript(bundle_id: str):
-    """Gracefully quits an application using its bundle ID via AppleScript."""
-    if not bundle_id:
-        return False, "Bundle ID is required to quit an application."
-    
-    # Basic sanitation for bundle_id (AppleScript is generally okay with typical bundle_id chars)
-    # but ensure no quotes break the script string.
-    sanitized_bundle_id = bundle_id.replace('\"', '\\\"') # Escape double quotes
-
-    applescript_command = f'tell application id "{sanitized_bundle_id}" to quit'
-    logger.info(f"Preparing AppleScript to quit application id: {sanitized_bundle_id}")
-
-    try:
-        # Using subprocess.run directly similar to simulate_keystrokes_applescript
-        result = subprocess.run(["osascript", "-e", applescript_command], capture_output=True, text=True, check=False, timeout=10) # 10s timeout
-        
-        if result.returncode == 0:
-            logger.info(f"AppleScript command to quit '{sanitized_bundle_id}' executed successfully.")
-            # Add to history
-            history_entry = {
-                "command_type": "quit_application_applescript",
-                "bundle_id": sanitized_bundle_id,
-                "status": "success"
-            }
-            hook_executed_command_history.append((history_entry, time.time()))
-            return True, None
-        else:
-            error_message = f"AppleScript to quit '{sanitized_bundle_id}' failed. Return code: {result.returncode}. Stderr: {result.stderr.strip() if result.stderr else result.stdout.strip() if result.stdout else 'Unknown osascript error'}"
-            logger.error(error_message)
-            history_entry = {
-                "command_type": "quit_application_applescript",
-                "bundle_id": sanitized_bundle_id,
-                "status": "error",
-                "error_message": error_message
-            }
-            hook_executed_command_history.append((history_entry, time.time()))
-            return False, error_message
-    except subprocess.TimeoutExpired:
-        error_message = f"AppleScript command to quit '{sanitized_bundle_id}' timed out after 10 seconds."
-        logger.error(error_message)
-        history_entry = {
-            "command_type": "quit_application_applescript",
-            "bundle_id": sanitized_bundle_id,
-            "status": "error",
-            "error_message": error_message
-        }
-        hook_executed_command_history.append((history_entry, time.time()))
-        return False, error_message
-    except Exception as e:
-        error_message = f"Exception during AppleScript execution for quitting '{sanitized_bundle_id}': {e}"
-        logger.error(error_message, exc_info=True)
-        history_entry = {
-            "command_type": "quit_application_applescript",
-            "bundle_id": sanitized_bundle_id,
-            "status": "error",
-            "error_message": str(e)
-        }
-        hook_executed_command_history.append((history_entry, time.time()))
-        return False, str(e) 

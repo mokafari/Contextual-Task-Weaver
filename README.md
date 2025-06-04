@@ -8,7 +8,7 @@
 
 Contextual Task Weaver is an AI-powered Emergent Task Management System (ETMS) designed to seamlessly integrate contextual understanding from your screen or camera activity into an evolving Kanban-style task board. The system aims to embody principles of emergent intelligence. This is envisioned to develop through continuous learning from user interactions and explicit feedback, guided by an Evolving Knowledge Store that enriches the LLM agent's contextual understanding. The system aims to transition from reactive task management to offering increasingly sophisticated proactive and automated assistance. It learns from your interactions, offers proactive assistance through contextual suggestions, helps you plan projects using external Large Language Models (LLMs), and allows for a user-defined 'Current Directive' to guide its focus. This application is built with React, TypeScript, Vite, and TailwindCSS, and leverages the Google Gemini API for its core AI capabilities.
 
-## Core Features
+## Core FeaturesHello from CTW into TextEdit!
 
 *   **Contextual Capture (Screen & Camera):**
     *   Monitor your screen or use your camera as input.

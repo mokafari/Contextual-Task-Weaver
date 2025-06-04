@@ -1,5 +1,15 @@
 import { v4 as uuidv4 } from 'uuid';
-import type { CognitiveParserOutput, DynamicContextMemory, DynamicContextItem, PotentialMainTask, UserNudgeInput, TaskItem } from '../types';
+import type { 
+    CognitiveParserOutput, 
+    DynamicContextMemory, 
+    DynamicContextItem, 
+    PotentialMainTask, 
+    UserNudgeInput, 
+    TaskItem,
+    MacOSActiveApplicationInfo,
+    LockedKeyword,
+    // HookContextHistoryPayload // Placeholder for future import if hookHistory is used
+} from '../types';
 import { logger } from './logger';
 
 const COMPONENT_NAME = "DynamicContextManager";
@@ -21,6 +31,7 @@ const KEYWORD_GOAL_BOOST = 0.3;
 const KEYWORD_ACTIVITY_BOOST = 0.15;
 const KEYWORD_KEYTEXT_BOOST = 0.1;
 const RELATED_TASK_SUGGESTION_COUNT = 3;
+const LOCKED_KEYWORD_BASE_BOOST = 0.5; // Base boost for a locked keyword match
 
 const STOP_WORDS = new Set(['a', 'an', 'the', 'is', 'was', 'are', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'can', 'could', 'may', 'might', 'must', 'and', 'but', 'or', 'nor', 'for', 'so', 'yet', 'if', 'then', 'else', 'when', 'where', 'why', 'how', 'what', 'which', 'who', 'whom', 'whose', 'this', 'that', 'these', 'those', 'in', 'on', 'at', 'by', 'from', 'to', 'with', 'about', 'above', 'after', 'again', 'against', 'all', 'am', 'any', 'as', 'because', 'before', 'below', 'between', 'both', 'com', 'cannot', 'down', 'during', 'each', 'few', 'further', 'here', 'http', 'https', 'i', 'into', 'it', 'its', 'itself', 'just', 'like', 'me', 'more', 'most', 'my', 'myself', 'no', 'not', 'now', 'of', 'off', 'once', 'only', 'other', 'ought', 'our', 'ours', 'ourselves', 'out', 'over', 'own', 'same', 'she', "s", "t", 'some', 'such', 'than', 'their', 'theirs', 'them', 'themselves', 'then', 'there', 'therefore', 'they', 'through', 'too', 'under', 'until', 'up', 'very', 'we', 'were', 'www', 'you', 'your', 'yours', 'yourself', 'yourselves', 'user', 'using', 'screen', 'capture', 'image', 'window', 'title', 'text', 'button', 'label', 'element', 'type', 'file', 'document', 'page', 'untitled', 'new', 'app', 'click', 'select', 'open', 'close', 'save', 'edit', 'view', 'manage', 'list', 'item', 'items', 'data', 'field', 'value', 'main', 'menu', 'tab', 'section', 'option', 'setting', 'config', 'form', 'input', 'output', 'log', 'error', 'message', 'details', 'overview', 'summary', 'report', 'analysis', 'test', 'dev', 'build', 'run', 'start', 'stop', 'process', 'update', 'create', 'delete', 'remove', 'add', 'get', 'set', 'send', 'receive', 'request', 'response', 'api', 'key', 'url', 'link', 'content', 'context', 'task', 'tasks', 'project', 'goal', 'plan', 'step', 'action', 'activity', 'mode', 'status', 'current', 'previous', 'next', 'first', 'last', 'number', 'string', 'object', 'array', 'null', 'undefined', 'true', 'false', 'system', 'chrome', 'google', 'microsoft', 'word', 'excel', 'vscode', 'code', 'script', 'python', 'javascript', 'typescript', 'react', 'node']);
 
@@ -36,7 +47,7 @@ export function extractKeywordsFromContext(context: CognitiveParserOutput): stri
     const processText = (text: string | undefined | null, _importanceFactor: number = 1) => { // importanceFactor currently not used but could be
         if (!text) return;
         text.toLowerCase()
-            .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()\[\]'"“”?<>|]/g, " ") 
+            .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()\[\]'"""?<>|]/g, " ") 
             .split(/\s+/)
             .map(w => w.trim())
             .filter(w => w.length > 2 && w.length < 25 && !STOP_WORDS.has(w) && isNaN(Number(w)))
@@ -197,59 +208,281 @@ export function analyzeSequentialContextForMetaIntent(
 
 export function updateDynamicContextMemory(
     context: CognitiveParserOutput,
-    currentMemory: DynamicContextMemory
+    currentMemory: DynamicContextMemory,
+    nativeHookData?: { // Optional new parameter
+        currentAppInfo?: Partial<MacOSActiveApplicationInfo>;
+        currentFocusedInput?: string | null;
+        // hookHistory?: Partial<HookContextHistoryPayload>; // For future use
+    },
+    lockedKeywords?: LockedKeyword[] // Added lockedKeywords parameter
 ): { updatedMemory: DynamicContextMemory; extractedKeywords: string[] } {
-    const newMemory: DynamicContextMemory = new Map(currentMemory);
+    const newMemory = new Map(currentMemory);
     const now = Date.now();
 
-    const extractedKeywords = extractKeywordsFromContext(context);
-
-    extractedKeywords.forEach(keyword => {
-        const existingItem = newMemory.get(keyword);
-        let newWeight = KEYWORD_INITIAL_WEIGHT;
-        if (context.activeInteractionContext?.userActivityGoal?.toLowerCase().includes(keyword)) newWeight += KEYWORD_GOAL_BOOST;
-        if (context.inferredActivity?.toLowerCase().includes(keyword)) newWeight += KEYWORD_ACTIVITY_BOOST;
-        if (context.keyTexts.some(kt => kt.text.toLowerCase().includes(keyword))) newWeight += KEYWORD_KEYTEXT_BOOST;
-
-
-        if (existingItem) {
-            existingItem.weight = Math.min(1, existingItem.weight + newWeight * 0.5); // Reinforce, cap at 1
-            existingItem.lastSeenTimestamp = now;
-            existingItem.frequency += 1;
-            existingItem.sourceContextIds.add(context.id);
+    // 1. Decay weights of existing keywords
+    newMemory.forEach((item, keyword) => {
+        const decayFactor = calculateDecayFactor(item.lastSeenTimestamp, KEYWORD_WEIGHT_DECAY_HALFLIFE_MS);
+        const newWeight = item.weight * decayFactor;
+        if (newWeight < MIN_KEYWORD_WEIGHT_TO_KEEP) {
+            newMemory.delete(keyword);
         } else {
-            newMemory.set(keyword, {
-                keyword,
-                weight: Math.min(1, newWeight), // Cap initial weight
-                lastSeenTimestamp: now,
-                frequency: 1,
-                sourceContextIds: new Set([context.id])
-            });
+            newMemory.set(keyword, { ...item, weight: newWeight });
         }
     });
 
-    // Decay, prune by minimum weight
-    const memoryArray = Array.from(newMemory.values())
-        .map(item => {
-            // Don't decay items just updated in this cycle. Only decay if lastSeenTimestamp is older.
-            const decay = (item.lastSeenTimestamp === now && extractedKeywords.includes(item.keyword)) ? 1.0 : calculateDecayFactor(item.lastSeenTimestamp, KEYWORD_WEIGHT_DECAY_HALFLIFE_MS);
-            return {
-                ...item,
-                weight: item.weight * decay
-            };
-        })
-        .filter(item => item.weight >= MIN_KEYWORD_WEIGHT_TO_KEEP);
-    // Removed: Pruning by MAX_KEYWORDS_IN_DCM. This constant is now for consumers.
-    // The list is sorted when consumers (like getHighestWeightedDCMItems or display logic) fetch data.
+    // 2. Extract and process keywords from the current CognitiveParserOutput context
+    const extractedKeywords = extractKeywordsFromContext(context);
+    const allProcessedKeywords = new Set<string>(extractedKeywords);
 
-    // Rebuild map
-    const finalMemory: DynamicContextMemory = new Map();
-    memoryArray.forEach(item => finalMemory.set(item.keyword, item));
-    
-    logger.debug(COMPONENT_NAME, "updateDynamicContextMemory", `DCM updated. Size: ${finalMemory.size}. Extracted keywords: ${extractedKeywords.length}`, {keywords: extractedKeywords.slice(0,5)});
-    return { updatedMemory: finalMemory, extractedKeywords };
+    const processAndWeightKeyword = (keyword: string, baseWeight: number, source: string, isLocked: boolean = false, lockedKwData?: LockedKeyword) => {
+        const existingItem = newMemory.get(keyword);
+        let newWeight = baseWeight;
+        let sources = new Set(existingItem?.sources || []);
+        sources.add(source + (isLocked ? " (Locked)" : ""));
+        let associatedData = existingItem?.associatedData || {};
+
+        if (isLocked && lockedKwData) {
+            // Apply boost based on priority (1-5). Priority 5 gets max boost.
+            const priorityBoost = LOCKED_KEYWORD_BASE_BOOST + ((lockedKwData.priority -1) * 0.15); // e.g. Prio 1 = 0.5, Prio 3 = 0.8, Prio 5 = 1.1
+            newWeight = Math.max(newWeight, priorityBoost); // Ensure locked keyword weight is significant
+            if (lockedKwData.meaning) {
+                associatedData.lockedMeaning = lockedKwData.meaning;
+            }
+            if (lockedKwData.context) {
+                associatedData.lockedContext = lockedKwData.context;
+            }
+            associatedData.isLocked = true;
+        }
+        
+        if (existingItem) {
+            newWeight = Math.min(1, existingItem.weight + newWeight); // Cap weight at 1
+        } else {
+            newWeight = Math.min(1, newWeight); // Cap initial weight at 1
+        }
+
+        newMemory.set(keyword, {
+            id: existingItem?.id || uuidv4(),
+            keyword,
+            weight: newWeight,
+            lastSeenTimestamp: now,
+            firstSeenTimestamp: existingItem?.firstSeenTimestamp || now,
+            sources: Array.from(sources),
+            type: isLocked ? 'locked_keyword' : 'extracted_keyword',
+            associatedData,
+        });
+        allProcessedKeywords.add(keyword);
+    };
+
+    extractedKeywords.forEach(kw => {
+        processAndWeightKeyword(kw, KEYWORD_INITIAL_WEIGHT, `context:${context.id}`);
+    });
+
+    // 3. Process keywords from nativeHookData if provided
+    if (nativeHookData) {
+        const nativeKeywords = new Set<string>();
+        const processNativeText = (text: string | undefined | null, boost: number) => {
+            if (!text) return;
+            text.toLowerCase()
+                .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()[\]'"""?<>|]/g, " ")
+                .split(/\s+/)
+                .map(w => w.trim())
+                .filter(w => w.length > 2 && w.length < 25 && !STOP_WORDS.has(w) && isNaN(Number(w)))
+                .forEach(k => {
+                    nativeKeywords.add(k);
+                    const existingItem = newMemory.get(k);
+                    let newWeightFromNative = KEYWORD_INITIAL_WEIGHT * boost;
+                    const nativeSource = `native:${context.id}:${nativeHookData.currentAppInfo?.application_name || 'unknown_app'}`;
+
+                    if (existingItem) {
+                        const updatedSources = new Set(existingItem.sources || []);
+                        updatedSources.add(nativeSource);
+                        newMemory.set(k, {
+                            ...existingItem,
+                            weight: Math.min(1.0, existingItem.weight + newWeightFromNative * 0.3), 
+                            lastSeenTimestamp: now,
+                            sources: Array.from(updatedSources),
+                            // type remains as is, or could be updated if a native keyword implies a stronger type
+                        });
+                    } else {
+                        newMemory.set(k, {
+                            id: uuidv4(),
+                            keyword: k,
+                            weight: newWeightFromNative,
+                            lastSeenTimestamp: now,
+                            firstSeenTimestamp: now,
+                            sources: [nativeSource],
+                            type: 'native_hook_keyword', // Assign a specific type
+                            associatedData: {},
+                        });
+                    }
+                });
+        };
+
+        if (nativeHookData.currentAppInfo) {
+            processNativeText(nativeHookData.currentAppInfo.application_name, 0.6);
+            processNativeText(nativeHookData.currentAppInfo.window_title, 0.4);
+        }
+        if (nativeHookData.currentFocusedInput) {
+            processNativeText(nativeHookData.currentFocusedInput, 0.8); // Higher boost for focused input
+        }
+
+        // Consider adding keywords from native hook history in the future (e.g., recent file names, commands)
+        // if (nativeHookData.hookHistory?.file_event_history) { ... }
+        // if (nativeHookData.hookHistory?.hook_executed_command_history) { ... }
+    }
+
+    // Process locked keywords
+    if (lockedKeywords) {
+        lockedKeywords.forEach(lk => {
+            const lkPhrase = lk.phrase.toLowerCase();
+            // Direct match
+            processAndWeightKeyword(lkPhrase, LOCKED_KEYWORD_BASE_BOOST, 'locked', true, lk);
+
+            // Check if any extracted/native keyword IS the locked phrase (already handled by direct match if lkPhrase is simple)
+            // Check if any extracted/native keyword CONTAINS or IS CONTAINED BY the locked phrase
+            // This helps with multi-word locked phrases or when context extracts parts of it.
+            allProcessedKeywords.forEach(existingKw => {
+                if (existingKw !== lkPhrase) { // Avoid reprocessing direct match
+                    if (existingKw.includes(lkPhrase) || lkPhrase.includes(existingKw)) {
+                         // If there's an overlap, boost the existing keyword a bit less than a direct locked match
+                         // but also ensure the locked phrase itself is present with high priority.
+                        const overlapBoost = LOCKED_KEYWORD_BASE_BOOST * 0.5 + ((lk.priority -1) * 0.1);
+                        const currentItem = newMemory.get(existingKw);
+                        if(currentItem) {
+                            const newWeight = Math.min(1, currentItem.weight + overlapBoost);
+                            let sources = new Set(currentItem.sources);
+                            sources.add(`locked_related:${lk.id}`);
+                            let associatedData = currentItem.associatedData || {};
+                            associatedData.relatedToLocked = lk.phrase;
+
+                            newMemory.set(existingKw, {
+                                ...currentItem,
+                                weight: newWeight,
+                                sources: Array.from(sources),
+                                associatedData
+                            });
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    const finalKeywordsList = Array.from(allProcessedKeywords).sort((a, b) => {
+        const itemA = newMemory.get(a);
+        const itemB = newMemory.get(b);
+        return (itemB?.weight || 0) - (itemA?.weight || 0);
+    });
+
+    logger.debug(COMPONENT_NAME, "updateDynamicContextMemory", `Memory updated. Size: ${newMemory.size}. Extracted keywords:`, finalKeywordsList.join(", "));
+    return { updatedMemory: newMemory, extractedKeywords: finalKeywordsList };
 }
 
+// --- Start of new function: isLikelyAIPromptingContext ---
+const AI_PROMPT_APP_NAMES = [
+    "cursor", // Cursor editor
+    "webstorm", // JetBrains IDEs can have AI plugins
+    "intellij idea",
+    "pycharm",
+    "phpstorm",
+    "rider",
+    "clion",
+    "datagrip",
+    "goland",
+    "rubymine",
+    "android studio",
+    "chatgpt", // Official ChatGPT apps or PWAs
+    "claude", // Official Claude apps or PWAs
+    "perplexity",
+    // Add more specific app names if they exist
+];
+
+const AI_PROMPT_BUNDLE_IDS = [
+    "com.google.Chrome", // Browser - check window title too
+    "com.apple.Safari", // Browser - check window title too
+    "com.mozilla.firefox", // Browser - check window title too
+    "com.microsoft.VSCode", // VS Code
+    "com.jetbrains.cursor", // If Cursor has a unique bundle ID
+    "com.openai.chatgpt", // Example, if an official desktop app exists
+    "com.anthropic.claude", // Example
+    "ai.perplexity.app", // Example
+    "com.cursor.Cursor", // Actual Cursor bundle ID
+    // Add more bundle IDs
+];
+
+const AI_PROMPT_WINDOW_TITLE_KEYWORDS = [
+    "chatgpt",
+    "claude",
+    "gemini",
+    "perplexity",
+    "poe",
+    "huggingface",
+    "copilot",
+    "ai assistant",
+    "llm",
+    "language model",
+    "ask ai",
+    "prompt",
+    "playground", // Common for LLM web UIs
+    "console", // Some AI tools use a console-like interface
+    "jetbrains ai assistant", // For JetBrains IDEs
+    "github copilot",
+    // Add more window title keywords
+];
+
+export function isLikelyAIPromptingContext(
+    activeAppInfo: MacOSActiveApplicationInfo | null
+): boolean {
+    if (!activeAppInfo) {
+        return false;
+    }
+
+    const appNameLower = activeAppInfo.application_name?.toLowerCase() || "";
+    const bundleIdLower = activeAppInfo.bundle_id?.toLowerCase() || "";
+    const windowTitleLower = activeAppInfo.window_title?.toLowerCase() || "";
+
+    // Check application name
+    if (AI_PROMPT_APP_NAMES.some(name => appNameLower.includes(name))) {
+        logger.debug(COMPONENT_NAME, "isLikelyAIPromptingContext", `Match on app name: ${appNameLower}`);
+        return true;
+    }
+
+    // Check bundle ID
+    if (AI_PROMPT_BUNDLE_IDS.some(id => bundleIdLower.includes(id))) {
+        // If it's a browser, also check window title for more specific AI context
+        if (["com.google.Chrome", "com.apple.Safari", "com.mozilla.firefox"].some(browserId => bundleIdLower.startsWith(browserId))) {
+            if (AI_PROMPT_WINDOW_TITLE_KEYWORDS.some(keyword => windowTitleLower.includes(keyword))) {
+                logger.debug(COMPONENT_NAME, "isLikelyAIPromptingContext", `Match on browser bundle ID (${bundleIdLower}) and window title keyword: ${windowTitleLower}`);
+                return true;
+            }
+            // If it's a known browser but no AI keyword in title, don't assume AI context yet
+            // unless the app name itself was generic like "Google Chrome" and a tab is specifically an AI tool.
+        } else {
+            // Not a generic browser, so bundle ID match is sufficient
+            logger.debug(COMPONENT_NAME, "isLikelyAIPromptingContext", `Match on bundle ID: ${bundleIdLower}`);
+            return true;
+        }
+    }
+
+    // Check window title for keywords (especially useful for web apps in browsers or less common AI tools)
+    if (AI_PROMPT_WINDOW_TITLE_KEYWORDS.some(keyword => windowTitleLower.includes(keyword))) {
+        logger.debug(COMPONENT_NAME, "isLikelyAIPromptingContext", `Match on window title keyword: ${windowTitleLower}`);
+        return true;
+    }
+    
+    // Heuristic for VS Code with Copilot Chat or similar views
+    if (bundleIdLower.includes("com.microsoft.vscode")) {
+        // Common side panel names or view titles for AI chat in VS Code
+        if (windowTitleLower.includes("copilot chat") || windowTitleLower.includes("chat view") || windowTitleLower.includes("ai chat")) {
+             logger.debug(COMPONENT_NAME, "isLikelyAIPromptingContext", `VS Code with AI-related view in title: ${windowTitleLower}`);
+            return true;
+        }
+    }
+
+    logger.debug(COMPONENT_NAME, "isLikelyAIPromptingContext", "No AI prompting context indicators found.", {appNameLower, bundleIdLower, windowTitleLower});
+    return false;
+}
+// --- End of new function ---
 
 export function updatePotentialMainTasks(
     context: CognitiveParserOutput | null, // Null if only applying nudge
